@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinAI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Fin<span>AI</span></div>
+    <div id="badges" class="badges"></div>
+  </header>
+
+  <div id="source-banner" class="banner hidden"></div>
+
+  <main>
+    <!-- HOME -->
+    <section id="tab-home" class="tab active">
+      <div class="hero">
+        <div class="hero-top">
+          <div>
+            <div class="hero-label" id="hero-label">--</div>
+            <div class="hero-value" id="hero-value">--</div>
+          </div>
+          <div class="score-pill"><span data-i18n="home.score">Health</span><strong id="score">--</strong><span>/100</span></div>
+        </div>
+        <div class="hero-bar"><div id="hero-bar-fill"></div></div>
+        <div class="hero-sub" id="hero-sub"></div>
+        <div class="hero-stats">
+          <div><span data-i18n="home.spent">Spent</span><strong id="stat-spent">--</strong></div>
+          <div><span data-i18n="home.free">Free after bills</span><strong id="stat-free">--</strong></div>
+        </div>
+      </div>
+
+      <div id="alerts"></div>
+
+      <div class="card">
+        <h3 id="budget-title">Your budget</h3>
+        <div class="donut-wrap">
+          <div class="donut" id="donut"><div class="donut-hole"><strong id="donut-pct">--</strong><span data-i18n="home.of_income_short">of income</span></div></div>
+          <div class="donut-legend" id="donut-legend"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 data-i18n="home.months">Month by month</h3>
+        <div id="month-bars"></div>
+        <div class="legend small muted">
+          <span><i style="background:var(--need)"></i><span data-i18n="legend.needs">Needs</span></span>
+          <span><i style="background:var(--want)"></i><span data-i18n="legend.wants">Wants</span></span>
+          <span><i style="background:var(--luxury)"></i><span data-i18n="legend.luxury">Luxury</span></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3><i class="ti ti-sparkles"></i> <span data-i18n="home.insights">AI insights</span> <span id="ai-mode" class="pill"></span></h3>
+        <p id="headline" class="headline" data-i18n="home.analyzing">Analyzing your finances...</p>
+        <ul id="insights" class="insights"></ul>
+        <p id="recommendation" class="muted"></p>
+        <div class="suggest" id="suggest-box"></div>
+      </div>
+    </section>
+
+    <!-- SPENDING -->
+    <section id="tab-spending" class="tab">
+      <div class="card">
+        <div class="row-between">
+          <h3 data-i18n="spend.title">Transactions</h3>
+          <button class="btn ghost small-btn" id="btn-refresh"><i class="ti ti-refresh"></i> <span data-i18n="spend.refresh">Re-analyze with AI</span></button>
+        </div>
+        <div class="filter-label" data-i18n="spend.month">Month</div>
+        <div class="filters" id="month-filters"></div>
+        <div class="filter-label" data-i18n="spend.category">Category</div>
+        <div class="filters">
+          <button class="chip cat-chip active" data-filter="all" data-i18n="filter.all">All</button>
+          <button class="chip cat-chip" data-filter="need" data-i18n="filter.need">Needs</button>
+          <button class="chip cat-chip" data-filter="want" data-i18n="filter.want">Wants</button>
+          <button class="chip cat-chip" data-filter="luxury" data-i18n="filter.luxury">Luxury</button>
+          <button class="chip cat-chip" data-filter="anomaly" data-i18n="filter.anomaly">Unusual</button>
+        </div>
+        <div class="search-box"><i class="ti ti-search"></i><input id="tx-search" type="search" data-i18n-placeholder="spend.search" placeholder="Search transactions..."></div>
+        <div class="small muted" id="tx-count"></div>
+        <div id="tx-grid" class="ag-theme-quartz tx-grid"></div>
+        <p class="muted small" data-i18n="spend.help">Tap a transaction to see the details.</p>
+        <p class="muted small" id="fx-note"></p>
+      </div>
+    </section>
+
+    <!-- GOALS -->
+    <section id="tab-goals" class="tab">
+      <div class="card">
+        <h3 data-i18n="goals.title">Savings goals</h3>
+        <p class="muted small" data-i18n="goals.help">Every transfer is a real PayPal sandbox payout and always asks for your confirmation.</p>
+        <div id="goal-list"></div>
+      </div>
+      <form class="card form" id="goal-form">
+        <h3 data-i18n="goals.new">New goal</h3>
+        <label><span data-i18n="goals.name">Name</span> <input name="name" required placeholder="Emergency fund"></label>
+        <label><span data-i18n="goals.target">Target amount</span> <input name="target" type="number" min="1" step="0.01" required placeholder="1000"></label>
+        <button class="btn" type="submit" data-i18n="goals.add">Add goal</button>
+      </form>
+      <div class="card">
+        <h3 data-i18n="history.title">Transfer history</h3>
+        <div id="history-list" class="muted small"></div>
+      </div>
+    </section>
+
+    <!-- BILLS -->
+    <section id="tab-bills" class="tab">
+      <div class="card">
+        <div class="row-between">
+          <h3 id="cal-title" data-i18n="bills.calendar">Payment calendar</h3>
+          <span id="bills-summary" class="muted small"></span>
+        </div>
+        <div class="calendar" id="calendar"></div>
+        <div class="legend small muted cal-legend">
+          <span><i class="sw due"></i><span data-i18n="bills.legend_due">Due</span></span>
+          <span><i class="sw auto"></i><span data-i18n="bills.legend_auto">Detected recurring</span></span>
+          <span><i class="sw paid"></i><span data-i18n="bills.legend_paid">Paid</span></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3 data-i18n="bills.fixed">Fixed payments</h3>
+        <div id="bill-list"></div>
+      </div>
+      <div class="card">
+        <h3 data-i18n="bills.recurring">Recurring payments found in your history</h3>
+        <p class="muted small" data-i18n="bills.recurring_help">FinAI found these charges every month.</p>
+        <div id="recurring-list"></div>
+      </div>
+      <form class="card form" id="bill-form">
+        <h3 data-i18n="bills.new">New fixed payment</h3>
+        <label><span data-i18n="bills.name">Name</span> <input name="name" required placeholder="Rent"></label>
+        <label><span data-i18n="bills.amount">Amount</span> <input name="amount" type="number" min="0.01" step="0.01" required placeholder="1100"></label>
+        <label><span data-i18n="bills.day">Day of month</span> <input name="day" type="number" min="1" max="31" required placeholder="1"></label>
+        <p class="muted small" data-i18n="bills.payee_note">Payments go to your PayPal sandbox payee account.</p>
+        <button class="btn" type="submit" data-i18n="bills.add">Add payment</button>
+      </form>
+    </section>
+
+    <!-- PROFILE + SETTINGS -->
+    <section id="tab-profile" class="tab">
+      <form class="card form" id="settings-form">
+        <h3 data-i18n="settings.title">Settings</h3>
+        <label><span data-i18n="settings.language">Language</span>
+          <select name="language">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+          </select>
+        </label>
+        <label><span data-i18n="settings.currency">Home currency</span>
+          <select name="currency">
+            <option value="USD">USD · US dollar</option>
+            <option value="CAD">CAD · Canadian dollar</option>
+            <option value="MXN">MXN · Peso mexicano</option>
+            <option value="EUR">EUR · Euro</option>
+            <option value="GBP">GBP · British pound</option>
+          </select>
+        </label>
+        <p class="muted small" data-i18n="settings.help">Changing the currency converts your income, goals and fixed payments.</p>
+        <button class="btn" type="submit" data-i18n="settings.save">Save settings</button>
+      </form>
+      <form class="card form" id="profile-form">
+        <h3 data-i18n="profile.title">Financial profile</h3>
+        <p class="muted small" data-i18n="profile.help">This is typed in by you and stays in this app.</p>
+        <label><span id="income-label">Monthly income</span> <input name="monthly_income" type="number" min="0" step="0.01" required></label>
+        <div class="pct-title" data-i18n="profile.targets">Budget targets (% of income)</div>
+        <div class="pct-grid">
+          <label><span><i class="sw" style="background:var(--need)"></i> <span data-i18n="legend.needs">Needs</span></span><input name="needs_percent" type="number" min="0" max="100" step="1" required></label>
+          <label><span><i class="sw" style="background:var(--want)"></i> <span data-i18n="legend.wants">Wants</span></span><input name="wants_percent" type="number" min="0" max="100" step="1" required></label>
+          <label><span><i class="sw" style="background:var(--save)"></i> <span data-i18n="legend.savings">Savings</span></span><input name="savings_percent" type="number" min="0" max="100" step="1" required></label>
+        </div>
+        <div class="pct-total" id="pct-total"></div>
+        <p class="muted small" data-i18n="profile.targets_help">Luxury counts inside wants.</p>
+        <button class="btn" type="submit" data-i18n="profile.save">Save profile</button>
+      </form>
+      <div class="card">
+        <h3 data-i18n="privacy.title">Privacy &amp; safety</h3>
+        <ul class="plain">
+          <li data-i18n="privacy.1"></li>
+          <li data-i18n="privacy.2"></li>
+          <li data-i18n="privacy.3"></li>
+          <li data-i18n="privacy.4"></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-tab="home" class="active"><i class="ti ti-home"></i><span data-i18n="tab.home">Home</span></button>
+    <button data-tab="spending"><i class="ti ti-receipt"></i><span data-i18n="tab.spending">Spending</span></button>
+    <button data-tab="goals"><i class="ti ti-target-arrow"></i><span data-i18n="tab.goals">Goals</span></button>
+    <button data-tab="bills"><i class="ti ti-calendar-dollar"></i><span data-i18n="tab.bills">Bills</span></button>
+    <button data-tab="profile"><i class="ti ti-user"></i><span data-i18n="tab.profile">Profile</span></button>
+  </nav>
+
+  <!-- Transaction detail: slides in from the right (from the bottom on phones) -->
+  <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <aside id="sheet" class="sheet" aria-hidden="true">
+    <div class="sheet-head">
+      <h3 data-i18n="detail.title">Transaction details</h3>
+      <button class="icon-btn" id="sheet-close" aria-label="Close"><i class="ti ti-x"></i></button>
+    </div>
+    <div id="sheet-body"></div>
+  </aside>
+
+  <!-- Confirmation dialog -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h3 id="modal-title">Confirm</h3>
+      <p id="modal-body"></p>
+      <div id="modal-extra"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="modal-cancel" data-i18n="modal.cancel">Cancel</button>
+        <button class="btn" id="modal-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Blocking loading screen (e.g. while Claude rewrites the analysis in a new language) -->
+  <div id="loading" class="loading hidden" role="status" aria-live="polite">
+    <div class="loading-box"><div class="spinner"></div><p id="loading-text">Loading...</p></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='i18n.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Secrets: never upload real keys
+.env
+
+# Personal files that stay on this computer (email, summary, notes)
+private/
+FinAI_resumen.docx
+~$*
+*.pdf
+
+# Local app data (profile, goals, bills, transfer history)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / tool settings
+.claude/
