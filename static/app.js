@@ -42,7 +42,7 @@ async function api(path, options = {}) {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     // Known problems come with a code, so the message can be shown in the user's language.
-    const known = data.code && t(`err.${data.code}`) !== `err.${data.code}` ? t(`err.${data.code}`) : null;
+    const known = data.code && t(`err.${data.code}`) !== `err.${data.code}` ? t(`err.${data.code}`, data) : null;
     throw new Error(known || data.error || `Request failed (${resp.status})`);
   }
   return data;
@@ -228,7 +228,9 @@ function renderDonut(a) {
   const share = (v) => (b.income > 0 ? Math.round((v / b.income) * 100) : 0);
   const pctText = (v) => Math.round(v * 10) / 10;
   const status = (actual, target, isSaving) => {
-    if (isSaving) return actual + unspent >= target ? ["ok", t("home.ok")] : ["under", t("home.under")];
+    // Same rule as the health score: money not spent yet must first cover this month's remaining bills.
+    const reachable = actual + (b.unspent_after_bills ?? unspent);
+    if (isSaving) return reachable >= target ? ["ok", t("home.ok")] : ["under", t("home.under")];
     return actual > target ? ["over", t("home.over")] : ["ok", t("home.ok")];
   };
   const row = (name, color, actual, subText, st) => `<div class="leg-row">
@@ -285,6 +287,8 @@ function renderHome(a) {
 
   $("#headline").textContent = a.headline;
   $("#ai-mode").textContent = t(a.ai_mode === "ai" ? "home.by_claude" : "home.basic");
+  $("#comparison").textContent = a.comparison || "";
+  $("#comparison").hidden = !a.comparison;
   $("#insights").innerHTML = a.insights.map((x) => `<li>${esc(x)}</li>`).join("");
   $("#recommendation").textContent = a.recommendation;
 

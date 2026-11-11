@@ -129,6 +129,10 @@ const STRINGS = {
     "demo.reset_body": "Your profile, goals, fixed payments and history go back to the sample starting data. PayPal sandbox activity is not changed.",
     "err.insufficient_funds": "The shared PayPal sandbox account is out of test money right now, so nothing was sent. Try a smaller amount or try again later.",
     "err.payout_failed": "PayPal could not complete this payment, so nothing was sent. Please try again later.",
+    "err.over_max": "Demo limit: one payment can be at most {limit}, so the shared test money lasts for everyone. Nothing was sent.",
+    "err.too_many": "Demo limit: up to {limit} payments per day for each visitor. Nothing was sent. Try again tomorrow.",
+    "err.daily_limit": "The shared PayPal sandbox account reached today's demo limit, so nothing was sent. Try again tomorrow.",
+    "err.blocked": "This request didn't come from the FinAI page, so it was blocked.",
   },
 
   es: {
@@ -259,6 +263,10 @@ const STRINGS = {
     "demo.reset_body": "Tu perfil, metas, pagos fijos e historial vuelven a los datos de ejemplo. La actividad del sandbox de PayPal no cambia.",
     "err.insufficient_funds": "La cuenta compartida del sandbox de PayPal se quedó sin dinero de prueba, así que no se envió nada. Prueba con un monto menor o inténtalo más tarde.",
     "err.payout_failed": "PayPal no pudo completar este pago, así que no se envió nada. Inténtalo más tarde.",
+    "err.over_max": "Límite de la demo: cada pago puede ser de máximo {limit}, para que el dinero de prueba alcance para todos. No se envió nada.",
+    "err.too_many": "Límite de la demo: hasta {limit} pagos por día por visitante. No se envió nada. Inténtalo mañana.",
+    "err.daily_limit": "La cuenta compartida del sandbox de PayPal llegó al límite diario de la demo, así que no se envió nada. Inténtalo mañana.",
+    "err.blocked": "Esta petición no vino de la página de FinAI, así que se bloqueó.",
   },
 };
 

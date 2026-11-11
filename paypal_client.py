@@ -144,6 +144,13 @@ def normalize_transaction(raw):
     }
 
 
+def payout_status(batch_id):
+    """Current status of a payout batch (PENDING, PROCESSING, SUCCESS, DENIED...)."""
+    resp = requests.get(f"{base_url()}/v1/payments/payouts/{batch_id}", headers=_headers(), timeout=20)
+    resp.raise_for_status()
+    return resp.json().get("batch_header", {}).get("batch_status")
+
+
 def send_payout(receiver_email, amount, currency, note, sender_item_id=None):
     """Execute a money transfer in the sandbox with the Payouts API.
 

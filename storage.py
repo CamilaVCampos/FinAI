@@ -114,6 +114,33 @@ def remember_ai(key, value, keep):
         _write_json(AI_CACHE_PATH, dict(list(cache.items())[-keep:]))
 
 
+PAYOUT_LOG_PATH = os.path.join(DATA_DIR, "payout_log.json")
+
+
+def reserve_payout(amount, daily_limit, today):
+    """Count `amount` against today's total for the shared sandbox account.
+
+    Returns False (and counts nothing) when it would pass `daily_limit`. All visitors share this
+    total, so nobody can empty the demo account. `today` is a "YYYY-MM-DD" string.
+    """
+    with _lock:
+        log = _read_json(PAYOUT_LOG_PATH, {})
+        total = log.get("total", 0.0) if log.get("date") == today else 0.0
+        if total + amount > daily_limit + 0.001:
+            return False
+        _write_json(PAYOUT_LOG_PATH, {"date": today, "total": round(total + amount, 2)})
+        return True
+
+
+def release_payout(amount, today):
+    """Give back a reservation when PayPal did not send the payout."""
+    with _lock:
+        log = _read_json(PAYOUT_LOG_PATH, {})
+        if log.get("date") == today:
+            log["total"] = round(max(log.get("total", 0.0) - amount, 0.0), 2)
+            _write_json(PAYOUT_LOG_PATH, log)
+
+
 def new_id():
     return uuid.uuid4().hex[:10]
 

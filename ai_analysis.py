@@ -44,8 +44,18 @@ comparison, insights, recommendation) in the language given in "answer_language"
 
 Translations: if "answer_language" is not English, return in "translations" one entry for EVERY
 transaction id you received (outgoing and incoming), with its description translated into that
-language. Keep brand and store names as they are ("Netflix subscription" -> "Suscripción de
-Netflix", "Designer handbag" -> "Bolso de diseñador"). If it is English, return an empty list.
+language. Keep proper names as they are ("Cafe in Paris - Le Petit Bistro" -> "Café en París -
+Le Petit Bistro", "Designer handbag" -> "Bolso de diseñador"). If it is English, return an empty list.
+
+Stay consistent with the numbers the app shows next to your text:
+- The app uses "monthly_income_declared" as the income for every month (not "income_received").
+- Each month gives "spent_total", "moved_to_savings_goals" and "left_from_declared_income". For a
+  finished month the app shows moved_to_savings_goals + left_from_declared_income as "saved";
+  for the running month only the money moved to goals is saved and the rest is "not spent yet".
+- "savings_goals" shows how much each goal already has; use those amounts.
+- The app's health score looks only at the focus month against the targets. If the focus month is
+  within the targets, say so plainly in the headline, and present earlier months' habits as
+  patterns to watch, not as current failures.
 
 Be concrete and kind. Do not give investment advice. Base everything only on the data provided;
 the app only sees PayPal activity, so do not assume this is all of the person's spending."""
@@ -95,13 +105,14 @@ def is_configured():
 def cache_key(transactions, profile, goals):
     raw = json.dumps(
         {
-            "version": 2,  # bump when the prompt or schema changes so old answers are not reused
+            "version": 3,  # bump when the prompt or schema changes so old answers are not reused
             "targets": [profile.get("needs_percent"), profile.get("wants_percent"), profile.get("savings_percent")],
-            "tx": [(t["id"], t["amount"], t["direction"]) for t in transactions],
+            "tx": [(t["id"], t["amount"], t["direction"], t["description"]) for t in transactions],
             "income": profile.get("monthly_income"),
             "currency": profile.get("currency"),
             "language": profile.get("language", "en"),
-            "goals": [(g["name"], g["target"]) for g in goals],
+            # Saved amounts too, so Claude never talks about an old goal balance.
+            "goals": [(g["name"], g["target"], round(float(g.get("saved", 0)), 2)) for g in goals],
         },
         sort_keys=True,
     )
@@ -124,13 +135,18 @@ def _outgoing_row(t):
 
 def _build_user_message(transactions, months, profile, goals, language="en"):
     by_month = []
+    income = float(profile.get("monthly_income") or 0)
     for m in months:
         in_month = [t for t in transactions if t["date"].startswith(m["key"])]
+        spent = sum(t["amount"] for t in in_month if t["direction"] == "out" and not _is_saving(t))
+        moved = sum(t["amount"] for t in in_month if _is_saving(t))
         by_month.append({
             "month": m["label"],
             "is_current_month": m["current"],
             "income_received": round(sum(t["amount"] for t in in_month if t["direction"] == "in"), 2),
-            "moved_to_savings_goals": round(sum(t["amount"] for t in in_month if _is_saving(t)), 2),
+            "spent_total": round(spent, 2),
+            "moved_to_savings_goals": round(moved, 2),
+            "left_from_declared_income": round(max(income - spent - moved, 0), 2),
             "outgoing_transactions": [
                 _outgoing_row(t) for t in in_month if t["direction"] == "out" and not _is_saving(t)
             ],
@@ -178,8 +194,8 @@ def _call_claude(user_message):
 # ---------- Rule-based fallback (no API key) ----------
 
 _KEYWORDS = {
-    "need": ["rent", "grocer", "walmart", "whole foods", "electric", "power", "water", "internet",
-             "pharmacy", "cvs", "insurance", "gas station", "shell", "bus", "metro", "doctor", "loan"],
+    "need": ["rent", "grocer", "supermarket", "electric", "power", "water", "internet", "phone plan",
+             "pharmacy", "insurance", "gas station", "ride share", "bus", "metro", "doctor", "loan"],
     "luxury": ["designer", "luxe", "jewel", "rolex", "first class", "handbag"],
 }
 

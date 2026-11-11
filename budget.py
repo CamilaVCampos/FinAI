@@ -83,8 +83,13 @@ def budget_503020(income, totals, pct=None, transfers=0.0, running=False):
 
 
 def savings_reachable(budget):
-    """Saved so far plus what is not spent yet: the most this month can still end up saving."""
-    return budget["savings"]["actual"] + budget.get("unspent", 0)
+    """Saved so far plus what is not spent yet: the most this month can still end up saving.
+
+    When the bills still due this month are known (`unspent_after_bills`), they are taken out
+    first, so early in the month the score doesn't look better than it really is.
+    """
+    unspent = budget.get("unspent_after_bills", budget.get("unspent", 0))
+    return budget["savings"]["actual"] + unspent
 
 
 def health_score(budget, anomaly_count):
@@ -156,7 +161,7 @@ def bills_paid_in_paypal(bills, month_transactions):
 
 
 def _merchant_key(description):
-    """"Netflix subscription" and "netflix  subscription!" -> "netflix subscription"."""
+    """"Streaming subscription" and "streaming  subscription!" -> "streaming subscription"."""
     letters = "".join(c if c.isalpha() or c == " " else " " for c in description.lower())
     return " ".join(letters.split())
 

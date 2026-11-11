@@ -30,7 +30,9 @@ server rejects any transfer request that isn't explicitly confirmed (`"confirm":
 ### Honest about its data
 FinAI only sees **PayPal activity** plus what the user types in. The app says this on screen, and
 the AI is instructed not to assume it sees all of the user's spending. When PayPal isn't connected
-or has no transactions yet, the app shows clearly labeled **sample data**.
+or has no transactions yet, the app shows clearly labeled **sample data**. All merchants in the demo
+are fictional, generic names (for example "Coffee shop" or "Streaming subscription"); a few early
+sandbox notes that named real stores are shown with these generic names too.
 
 ### A shared demo where every visitor gets their own copy
 FinAI is a single-person app: it reads one PayPal sandbox account that belongs to a sample person.
@@ -42,6 +44,11 @@ So that several judges can try it at the same time without stepping on each othe
 - **Profile → Reset demo** brings back the sample starting data for that visitor only.
 - Transfers and bill payments are real sandbox payouts from one shared test account. If its test
   balance runs low, the app says so clearly and nothing is sent.
+- **Demo safety limits** keep test money available for everyone: one payment can be at most
+  150 USD, each visitor can make up to 5 payments a day, and all visitors together up to 400 USD
+  a day (configurable in `.env`). Larger bills, like the sample rent, show a clear message instead.
+- The Home screen focuses on the latest month with at least 5 PayPal sandbox transactions, so a
+  single payment early in a new month doesn't leave everyone looking at an almost empty month.
 - Claude's analyses are cached and shared between visitors with the same settings, which keeps the
   app fast and the API cost low.
 
@@ -133,6 +140,8 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 - PayPal and Anthropic credentials live only in server environment variables and never reach the browser.
 - The AI receives transaction descriptions, dates and amounts only. It never receives credentials.
 - Money moves only after explicit user confirmation, and the server double-checks it.
+- Requests that change data must come from the FinAI page itself (JSON only, cross-site requests are
+  rejected), and payouts have per-payment and daily limits.
 - Everything runs against the PayPal **sandbox**: no real money is involved.
 
 ## Roadmap

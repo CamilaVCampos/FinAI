@@ -21,8 +21,8 @@ import storage  # noqa: E402
 app = Flask(__name__)
 
 
-def error(message, status=400, code=None):
-    body = {"error": message}
+def error(message, status=400, code=None, **details):
+    body = {"error": message, **details}
     if code:
         body["code"] = code  # lets the browser show a friendly, translated message
     return jsonify(body), status
@@ -50,6 +50,21 @@ def remember_visitor(response):
     return response
 
 
+@app.before_request
+def block_cross_site_writes():
+    """Changes (POST, PATCH, DELETE) must come from FinAI's own page.
+
+    FinAI's page always sends JSON. Another website can't send a JSON request here without the
+    browser asking first (CORS), and Flask never says yes, so a hidden form on another site can't
+    move money. The Sec-Fetch-Site header, sent by modern browsers, is checked too.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS") or not request.path.startswith("/api/"):
+        return None
+    if not request.is_json or request.headers.get("Sec-Fetch-Site") == "cross-site":
+        return error("Requests must come from the FinAI page.", 403, "blocked")
+    return None
+
+
 def my_store():
     return storage.load_store(flask.g.visitor)
 
@@ -68,7 +83,35 @@ def payout_error(exc):
     return error(f"PayPal could not complete the payment, so nothing was sent. ({text[:160]})", 502, "payout_failed")
 
 
+# Demo safety limits for the shared sandbox account (amounts in the PayPal account currency).
+# They keep test money available for every judge; change them with environment variables.
+PAYOUT_MAX_AMOUNT = float(os.getenv("PAYOUT_MAX_AMOUNT", 150))  # largest single transfer or bill payment
+PAYOUT_DAILY_LIMIT = float(os.getenv("PAYOUT_DAILY_LIMIT", 400))  # total for ALL visitors per day
+PAYOUTS_PER_VISITOR_DAY = int(os.getenv("PAYOUTS_PER_VISITOR_DAY", 5))
+
+
+def send_limited_payout(receiver, sent, note, store):
+    """Send a payout only if it fits the demo limits. Returns (payout, None) or (None, error response)."""
+    currency = paypal_currency()
+    if sent > PAYOUT_MAX_AMOUNT:
+        return None, error(f"Demo limit: one payment can be at most {PAYOUT_MAX_AMOUNT:.2f} {currency}.",
+                           400, "over_max", limit=f"{PAYOUT_MAX_AMOUNT:.2f} {currency}")
+    today = date.today().isoformat()
+    sent_today = sum(1 for h in store["history"] if h.get("date", "").startswith(today))
+    if sent_today >= PAYOUTS_PER_VISITOR_DAY:
+        return None, error(f"Demo limit: {PAYOUTS_PER_VISITOR_DAY} payments per day.", 429, "too_many",
+                           limit=PAYOUTS_PER_VISITOR_DAY)
+    if not storage.reserve_payout(sent, PAYOUT_DAILY_LIMIT, today):
+        return None, error("Demo limit: the shared sandbox account reached today's limit.", 429, "daily_limit")
+    try:
+        return paypal_client.send_payout(receiver, sent, currency, note), None
+    except Exception as exc:
+        storage.release_payout(sent, today)
+        return None, payout_error(exc)
+
+
 HISTORY_MONTHS = 2  # months shown before the focus month
+MIN_FOCUS_TRANSACTIONS = 5  # a month needs this many PayPal transactions to become the focus month
 LOOKBACK_MONTHS = 3  # how far back to look for the latest month with PayPal activity
 LANGUAGES = ["en", "es"]
 AI_CACHE_SIZE = 4
@@ -110,7 +153,7 @@ def pending_transfers(history, real, first_key):
     for h in history:
         if not h.get("payout_batch_id") or h["date"][:7] < first_key:
             continue
-        note = payout_note(h)
+        note = sample_data.generic_name(payout_note(h))  # same name the PayPal row is shown with
         amount = float(h.get("sent_amount") or h["amount"])
         earliest = (date.fromisoformat(h["date"][:10]) - timedelta(days=1)).isoformat()
         match = next((t for t in paypal_out if t["description"] == note
@@ -152,17 +195,22 @@ def get_transactions(home=None, today=None):
             start = datetime(oldest.year, oldest.month, oldest.day, tzinfo=timezone.utc)
             # Test money added to the sandbox account is funding, not income: the opening deposit
             # ("Initial balance") and any top-up sent with the note "Sandbox funding".
-            real = [t for t in paypal_client.search_transactions(start=start) if not is_test_funding(t)]
+            real = [{**t, "description": sample_data.generic_name(t["description"])}
+                    for t in paypal_client.search_transactions(start=start) if not is_test_funding(t)]
             real += pending_transfers(my_store()["history"], real, sample_data.month_key(oldest))
         except Exception:
             problem = "read_failed"
 
-    # Focus: this month if it has PayPal activity, otherwise the latest month that does.
-    focus_back = 0
-    for back in range(LOOKBACK_MONTHS + 1):
-        if any(t["date"].startswith(sample_data.month_key(sample_data.month_start(today, back))) for t in real):
-            focus_back = back
-            break
+    # Focus: the latest month with enough PayPal activity (MIN_FOCUS_TRANSACTIONS). One or two
+    # payouts made by a visitor early in a new month must not move everyone's Home to an almost
+    # empty month. If no month has that many, the latest month with any activity is used.
+    def count_in(back):
+        key = sample_data.month_key(sample_data.month_start(today, back))
+        return sum(1 for t in real if t["date"].startswith(key) and not t.get("pending"))
+
+    counts = [count_in(back) for back in range(LOOKBACK_MONTHS + 1)]
+    focus_back = next((b for b, n in enumerate(counts) if n >= MIN_FOCUS_TRANSACTIONS),
+                      next((b for b, n in enumerate(counts) if n > 0), 0))
     focus = sample_data.month_start(today, focus_back)
 
     transactions, months = [], []
@@ -270,6 +318,12 @@ def analysis():
     totals = budget.spending_by_category(current_txs, classifications)
     transfers = sum(t["amount"] for t in current_txs if budget.is_saving(t) and t["direction"] == "out")
     plan = budget.budget_503020(income, totals, budget.targets(profile), transfers, current["current"])
+    forecast = budget.bills_forecast(bills, income, plan["spent"] + plan["transfers"],
+                                     budget.bills_paid_in_paypal(bills, [t for t in current_txs if t["source"] == "paypal"]),
+                                     current["key"])
+    if plan["running"]:
+        # Money not spent yet still has to pay this month's remaining bills.
+        plan["unspent_after_bills"] = round(max(min(plan["unspent"], forecast["free_after_bills"]), 0), 2)
     anomalies = [t for t in enriched if t["is_anomaly"]]
     current_anomalies = [t for t in anomalies if t["date"].startswith(current["key"])]
     monthly_saving = float(result.get("suggested_monthly_saving") or 0)
@@ -287,12 +341,11 @@ def analysis():
         "alerts": budget.alerts(plan),
         "anomalies": anomalies,
         "headline": result["headline"],
+        "comparison": result.get("comparison", ""),
         "insights": result["insights"],
         "recommendation": result["recommendation"],
         "suggested_monthly_saving": round(monthly_saving, 2),
-        "bills_forecast": budget.bills_forecast(bills, income, plan["spent"] + plan["transfers"],
-                                                budget.bills_paid_in_paypal(bills, [t for t in current_txs if t["source"] == "paypal"]),
-                                                current["key"]),
+        "bills_forecast": forecast,
         "profile_is_sample": bool(profile.get("sample")),
         # Each goal uses the monthly amount the user chose for it, or Claude's suggestion.
         "goals": [{**g, "monthly_source": "you" if g.get("monthly") else "claude",
@@ -488,10 +541,9 @@ def contribute(goal_id):
         sent = to_paypal_amount(amount, home)
     except ValueError as exc:
         return error(str(exc), 503)
-    try:
-        payout = paypal_client.send_payout(receiver, sent, paypal_currency(), f"FinAI savings: {goal['name']}")
-    except Exception as exc:
-        return payout_error(exc)
+    payout, problem = send_limited_payout(receiver, sent, f"FinAI savings: {goal['name']}", store)
+    if problem:
+        return problem
 
     def change(d):
         g = storage.find_by_id(d["goals"], goal_id)
@@ -582,10 +634,9 @@ def pay_bill(bill_id):
         sent = to_paypal_amount(bill["amount"], home)
     except ValueError as exc:
         return error(str(exc), 503)
-    try:
-        payout = paypal_client.send_payout(receiver, sent, paypal_currency(), f"FinAI bill payment: {bill['name']}")
-    except Exception as exc:
-        return payout_error(exc)
+    payout, problem = send_limited_payout(receiver, sent, f"FinAI bill payment: {bill['name']}", store)
+    if problem:
+        return problem
 
     def change(d):
         b = storage.find_by_id(d["bills"], bill_id)
@@ -606,10 +657,34 @@ def reset_demo():
     return jsonify({"ok": True})
 
 
+UNFINISHED_PAYOUT = {"PENDING", "PROCESSING", "NEW"}
+
+
 @app.get("/api/history")
 def history():
-    return jsonify(list(reversed(my_store()["history"])))
+    """Transfer and bill-payment history. Payouts still marked PENDING are checked again with
+    PayPal (a few per request), so the list shows when they finish (SUCCESS, DENIED...)."""
+    store = my_store()
+    unfinished = [h["payout_batch_id"] for h in store["history"]
+                  if h.get("payout_batch_id") and h.get("status") in UNFINISHED_PAYOUT][-5:]
+    news = {}
+    if unfinished and paypal_client.is_configured():
+        for batch_id in unfinished:
+            try:
+                news[batch_id] = paypal_client.payout_status(batch_id)
+            except Exception:
+                pass  # keep the old status; it is checked again next time
+    news = {k: v for k, v in news.items() if v}
+    if news:
+        def change(d):
+            for h in d["history"]:
+                if h.get("payout_batch_id") in news:
+                    h["status"] = news[h["payout_batch_id"]]
+            return d["history"]
+        return jsonify(list(reversed(update_my_store(change))))
+    return jsonify(list(reversed(store["history"])))
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=int(os.getenv("PORT", 5000)))
+    # Debug mode (auto-reload, error pages) only when asked for: never on a public server.
+    app.run(debug=os.getenv("FLASK_DEBUG") == "1", port=int(os.getenv("PORT", 5000)))
