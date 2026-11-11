@@ -81,13 +81,20 @@ Stay consistent with the numbers the app shows next to your text:
 - Each month gives "spent_total", "moved_to_savings_goals" and "left_from_declared_income". For a
   finished month the app shows moved_to_savings_goals + left_from_declared_income as "saved";
   for the running month only the money moved to goals is saved and the rest is "not spent yet".
-- "savings_goals" shows how much each goal already has; use those amounts.
+- "savings_goals" shows how much each goal already has; use those amounts. When a goal has
+  "monthly_chosen_by_user", the user decided to put that amount into it every month: respect it.
+  The app gives the rest of your suggested_monthly_saving to the other goals in the order listed,
+  never more than a goal still needs, so describe the plan in that same order.
+- Every number you write must come from the data or from arithmetic you have double-checked.
+  When you compare amounts ("almost the same as", "twice", "half of", "more than"), make sure the
+  comparison is true for the exact numbers.
 - The app's health score looks only at the focus month against the targets. If the focus month is
   within the targets, say so plainly in the headline, and present earlier months' habits as
   patterns to watch, not as current failures.
 
 Write every text in the language given in "answer_language", and name the three categories with
-the words in "category_words", which are the words the app shows. Be concrete and kind. Do not give
+the words in "category_words", which are the words the app shows. Write every amount in the same
+format as "amount_format_example" (same symbol or code, comma for thousands, point for decimals). Be concrete and kind. Do not give
 investment advice.
 
 """ + ABOUT_DATA
@@ -145,7 +152,7 @@ def is_configured():
 def cache_key(transactions, profile, goals, months):
     raw = json.dumps(
         {
-            "version": 5,  # bump when the prompt or schema changes so old answers are not reused
+            "version": 7,  # bump when the prompt or schema changes so old answers are not reused
             # Which months, and whether the last one is still running: an analysis written
             # "so far in November" must not be shown in December, when November is finished.
             "months": [(m["key"], m["current"]) for m in months],
@@ -154,8 +161,8 @@ def cache_key(transactions, profile, goals, months):
             "income": profile.get("monthly_income"),
             "currency": profile.get("currency"),
             "language": profile.get("language", "en"),
-            # Saved amounts too, so Claude never talks about an old goal balance.
-            "goals": [(g["name"], g["target"], round(float(g.get("saved", 0)), 2)) for g in goals],
+            # Saved and monthly amounts too, so Claude never talks about an old goal balance or plan.
+            "goals": [(g["name"], g["target"], round(float(g.get("saved", 0)), 2), g.get("monthly")) for g in goals],
         },
         sort_keys=True,
     )
@@ -177,6 +184,18 @@ def is_finai_payment(t):
 
 
 LANGUAGE_NAMES = {"en": "English", "es": "Spanish (Latin American)"}
+
+# How the app's screens write 1234.56 in each language (the browser's en-US / es-MX formats),
+# so Claude's amounts look exactly like the numbers next to them.
+_AMOUNT_PREFIX = {
+    "en": {"USD": "$", "CAD": "CA$", "MXN": "MX$", "EUR": "€", "GBP": "£"},
+    "es": {"USD": "USD ", "CAD": "CAD ", "MXN": "$", "EUR": "EUR ", "GBP": "GBP "},
+}
+
+
+def amount_example(currency, language):
+    prefix = _AMOUNT_PREFIX.get(language, _AMOUNT_PREFIX["en"]).get(currency, f"{currency} ")
+    return f"{prefix}1,234.56"
 CATEGORY_WORDS = {  # the words the app's screens use, so Claude's text matches them
     "en": {"need": "needs", "want": "wants", "luxury": "luxury"},
     "es": {"need": "necesidades", "want": "deseos", "luxury": "lujos"},
@@ -320,10 +339,12 @@ def _insights_message(transactions, months, profile, goals, classifications, lan
     payload = {
         "answer_language": LANGUAGE_NAMES.get(language, "English"),
         "category_words": CATEGORY_WORDS.get(language, CATEGORY_WORDS["en"]),
+        "amount_format_example": amount_example(profile.get("currency", "USD"), language),
         "currency": profile.get("currency", "USD"),
         "monthly_income_declared": profile.get("monthly_income", 0),
         "budget_targets_percent": budget.targets(profile),
-        "savings_goals": [{"name": g["name"], "target": g["target"], "saved": g.get("saved", 0)} for g in goals],
+        "savings_goals": [{"name": g["name"], "target": g["target"], "saved": g.get("saved", 0),
+                           "monthly_chosen_by_user": g.get("monthly") or None} for g in goals],
         "months": by_month,
     }
     return "Here is the user's data as JSON:\n" + json.dumps(payload, indent=1)

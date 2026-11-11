@@ -346,9 +346,11 @@ function renderHome(a) {
     $("#suggest-box").innerHTML = "";
   } else if (a.suggested_monthly_saving > 0 && goals.some((g) => g.status !== "reached" && goalMonthly(g) > 0)) {
     // The first goal that still needs money, with the same monthly amount the Goals tab shows.
+    // The button names the same amount the transfer dialog starts with (the demo limit caps it).
     const goal = goals.find((g) => g.status !== "reached" && goalMonthly(g) > 0);
-    $("#suggest-box").innerHTML = suggested + `<button class="btn" id="btn-save-now">${esc(t("home.save_toward", { goal: itemName(goal) }))}</button>`;
-    $("#btn-save-now").onclick = () => contribute(goal, goalMonthly(goal));
+    const amount = Math.min(goalMonthly(goal), Math.floor(payoutMaxHome() * 100) / 100);
+    $("#suggest-box").innerHTML = suggested + `<button class="btn" id="btn-save-now">${esc(t("home.save_toward", { amount: money(amount), goal: itemName(goal) }))}</button>`;
+    $("#btn-save-now").onclick = () => contribute(goal, amount);
   } else if (a.suggested_monthly_saving > 0) {
     $("#suggest-box").innerHTML = suggested + `<button class="btn ghost" onclick="showTab('goals')">${t("home.create_goal")}</button>`;
   } else {
@@ -361,7 +363,8 @@ function renderPlanImpact(a) {
   const p = a.plan_impact;
   const box = $("#plan-impact");
   if (a.ai_pending || !p) { box.innerHTML = ""; box.hidden = true; return; }
-  const when = (x) => (x.eta ? capitalize(monthName(x.eta, "long")) : t("impact.never"));
+  // Mid-sentence ("Reached in February" / "La alcanzas en febrero"): the locale's own capitals.
+  const when = (x) => (x.eta ? monthName(x.eta, "long") : t("impact.never"));
   const goal = itemName({ name: p.goal, sample: p.goal_sample });
   box.hidden = false;
   box.innerHTML = `<div class="impact-title">${esc(t("impact.title", { goal, amount: money(p.remaining) }))}</div>

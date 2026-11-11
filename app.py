@@ -2,6 +2,7 @@
 
 Run locally:  python app.py   ->  http://localhost:5000
 """
+import math
 import os
 import threading
 from datetime import date, datetime, timedelta, timezone
@@ -240,11 +241,17 @@ def get_transactions(home=None, today=None):
     return fx.convert_transactions(transactions, home), months, note
 
 
+MAX_NUMBER = 1_000_000_000  # no amount in a personal budget is bigger; also keeps the JSON valid
+MAX_NAME = 60  # characters in a goal or bill name
+
+
 def to_number(value, name, minimum=0.0):
     try:
         number = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"{name} must be a number")
+    if not math.isfinite(number) or number > MAX_NUMBER:  # "NaN" and "Infinity" would break the page
+        raise ValueError(f"{name} must be a number up to {MAX_NUMBER:,}")
     if number < minimum:
         raise ValueError(f"{name} must be at least {minimum}")
     return number
@@ -449,6 +456,7 @@ def analysis():
 # ---------- Your own edits to a transaction ----------
 
 CATEGORIES = ["need", "want", "luxury"]
+MAX_EDITS = 300  # per visitor: more than enough for three months of transactions
 
 
 @app.post("/api/transactions/<tx_id>/edit")
@@ -466,12 +474,17 @@ def edit_transaction(tx_id):
     def change(d):
         edits = d.setdefault("edits", {})
         edit = {k: v for k, v in {"name": name, "category": category}.items() if v}
+        if edit and tx_id not in edits and len(edits) >= MAX_EDITS:
+            return None
         if edit:
             edits[tx_id] = edit
         else:
             edits.pop(tx_id, None)
         return edit
-    return jsonify(update_my_store(change))
+    result = update_my_store(change)
+    if result is None:
+        return error(f"You can edit up to {MAX_EDITS} transactions in this demo.", 400)
+    return jsonify(result)
 
 
 # ---------- Profile ----------
@@ -561,7 +574,7 @@ def list_goals():
 @app.post("/api/goals")
 def create_goal():
     body = request.get_json(force=True)
-    name = (body.get("name") or "").strip()
+    name = (body.get("name") or "").strip()[:MAX_NAME]
     if not name:
         return error("Goal name is required")
     try:
@@ -676,7 +689,7 @@ def list_bills():
 @app.post("/api/bills")
 def create_bill():
     body = request.get_json(force=True)
-    name = (body.get("name") or "").strip()
+    name = (body.get("name") or "").strip()[:MAX_NAME]
     if not name:
         return error("Bill name is required")
     try:
@@ -686,8 +699,9 @@ def create_bill():
         return error(str(exc))
     if day > 31:
         return error("Day must be between 1 and 31")
-    bill = {"id": storage.new_id(), "name": name, "amount": amount, "day": day,
-            "payee_email": (body.get("payee_email") or "").strip(), "paid_months": []}
+    # Payments always go to the demo's sandbox payee account (BILLS_RECEIVER_EMAIL), never to an
+    # address sent by the browser, so the shared test money can't be sent anywhere else.
+    bill = {"id": storage.new_id(), "name": name, "amount": amount, "day": day, "paid_months": []}
     update_my_store(lambda d: d["bills"].append(bill))
     return jsonify(bill), 201
 
@@ -708,9 +722,11 @@ def pay_bill(bill_id):
     bill = storage.find_by_id(store["bills"], bill_id)
     if not bill:
         return error("Bill not found", 404)
-    receiver = bill.get("payee_email") or os.getenv("BILLS_RECEIVER_EMAIL")
+    if budget.month_key() in bill.get("paid_months", []):
+        return error("This bill is already paid this month.", 409, "already_paid")
+    receiver = os.getenv("BILLS_RECEIVER_EMAIL")
     if not paypal_client.is_configured() or not receiver:
-        return error("Connect PayPal sandbox and set a payee email (or BILLS_RECEIVER_EMAIL) to pay bills.")
+        return error("Connect PayPal sandbox and set BILLS_RECEIVER_EMAIL to pay bills.")
     home = (store["profile"].get("currency") or paypal_currency()).upper()
     try:
         sent = to_paypal_amount(bill["amount"], home)
@@ -770,8 +786,10 @@ def history():
 def warm_up_ai():
     """Prepare Claude's analysis of the sample starting data, in every language, right after the
     server starts. The first judge to open FinAI (in English or Spanish) then sees Claude's
-    insights at once instead of waiting. Uses a throwaway visitor that is deleted afterwards."""
-    visitor = storage.new_visitor_id()
+    insights at once instead of waiting. Uses its own fixed visitor id (never a real visitor's),
+    which starts fresh and is deleted afterwards, so a restart halfway can't leave extra files."""
+    visitor = "0" * 32
+    storage.reset_store(visitor)
     cookie = {"Cookie": f"{VISITOR_COOKIE}={visitor}"}
     client = app.test_client()
     try:

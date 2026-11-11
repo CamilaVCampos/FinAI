@@ -16,7 +16,7 @@ const STRINGS = {
     "home.months": "Month by month", "home.so_far": "(so far)", "home.saved": "+{amount} saved",
     "home.insights": "AI insights", "home.by_claude": "by Claude", "home.basic": "basic rules",
     "home.suggested": "AI suggested saving", "home.per_month": "{amount} / month",
-    "home.save_toward": "Save it toward \"{goal}\"", "home.create_goal": "Create a goal",
+    "home.save_toward": "Save {amount} toward \"{goal}\"", "home.create_goal": "Create a goal",
     "home.sample_profile": "Sample profile: the {income} monthly income, the goal and the fixed payments are examples so the demo never starts empty.",
     "home.enter_income": "Enter your own income",
     "cat.need": "need", "cat.want": "want", "cat.luxury": "luxury", "cat.saving": "saving", "cat.income": "income",
@@ -149,6 +149,7 @@ const STRINGS = {
     "pay.over_limit": "Above the demo limit of {amount}: can't be paid from the shared test account.",
     "err.payout_failed": "PayPal could not complete this payment, so nothing was sent. Please try again later.",
     "err.over_max": "Demo limit: one payment can be at most {limit}, so the shared test money lasts for everyone. Nothing was sent.",
+    "err.already_paid": "This bill is already paid this month, so nothing was sent.",
     "err.too_many": "Demo limit: up to {limit} payments per day for each visitor. Nothing was sent. Try again tomorrow.",
     "err.daily_limit": "The shared PayPal sandbox account reached today's demo limit, so nothing was sent. Try again tomorrow.",
     "err.blocked": "This request didn't come from the FinAI page, so it was blocked.",
@@ -169,7 +170,7 @@ const STRINGS = {
     "home.months": "Mes a mes", "home.so_far": "(en lo que va)", "home.saved": "+{amount} ahorrado",
     "home.insights": "Consejos de la IA", "home.by_claude": "por Claude", "home.basic": "reglas básicas",
     "home.suggested": "Ahorro sugerido por la IA", "home.per_month": "{amount} / mes",
-    "home.save_toward": "Ahorrarlo en \"{goal}\"", "home.create_goal": "Crear una meta",
+    "home.save_toward": "Ahorrar {amount} en \"{goal}\"", "home.create_goal": "Crear una meta",
     "home.sample_profile": "Perfil de ejemplo: el ingreso de {income} al mes, la meta y los pagos fijos son ejemplos para que el demo nunca empiece vacío.",
     "home.enter_income": "Escribe tu propio ingreso",
     "cat.need": "necesidad", "cat.want": "deseo", "cat.luxury": "lujo", "cat.saving": "ahorro", "cat.income": "ingreso",
@@ -295,13 +296,14 @@ const STRINGS = {
     "impact.extra": "Eso significa apartar {amount} más cada mes.",
     "guide.title": "Prueba FinAI en 3 pasos", "guide.close": "Ocultar la guía",
     "guide.intro": "Un recorrido rápido por lo que hace FinAI. Todo el dinero aquí es dinero de prueba del sandbox de PayPal.",
-    "guide.step1": "Mira en qué se va tu dinero", "guide.step1_sub": "Claude clasifica cada compra de PayPal en necesidades, gustos y lujos",
+    "guide.step1": "Mira en qué se va tu dinero", "guide.step1_sub": "Claude clasifica cada compra de PayPal en necesidades, deseos y lujos",
     "guide.step2": "Mueve dinero a una meta", "guide.step2_sub": "Envía un pequeño payout real del sandbox a tu meta de ahorro",
     "guide.step3": "Paga una factura con PayPal", "guide.step3_sub": "Paga un pago fijo pequeño desde el calendario",
     "pay.demo_limit": "Límite de la demo: hasta {amount} por pago, para que el dinero de prueba compartido alcance para todos.",
     "pay.over_limit": "Supera el límite de la demo de {amount}: no se puede pagar desde la cuenta de prueba compartida.",
     "err.payout_failed": "PayPal no pudo completar este pago, así que no se envió nada. Inténtalo más tarde.",
     "err.over_max": "Límite de la demo: cada pago puede ser de máximo {limit}, para que el dinero de prueba alcance para todos. No se envió nada.",
+    "err.already_paid": "Esta factura ya está pagada este mes, así que no se envió nada.",
     "err.too_many": "Límite de la demo: hasta {limit} pagos por día por visitante. No se envió nada. Inténtalo mañana.",
     "err.daily_limit": "La cuenta compartida del sandbox de PayPal llegó al límite diario de la demo, así que no se envió nada. Inténtalo mañana.",
     "err.blocked": "Esta petición no vino de la página de FinAI, así que se bloqueó.",
@@ -312,7 +314,8 @@ const STRINGS = {
 // Names the user types are shown exactly as typed.
 const SAMPLE_NAMES = {
   es: { "Emergency fund": "Fondo de emergencia", "Rent": "Renta", "Electricity": "Luz",
-        "Internet": "Internet", "Phone plan": "Plan de celular" },
+        "Internet": "Internet", "Phone plan": "Plan de celular",
+        "Streaming service": "Servicio de streaming" },
 };
 
 const LOCALES = { en: "en-US", es: "es-MX" };
