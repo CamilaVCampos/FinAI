@@ -243,6 +243,31 @@ def bills_forecast(bills, income, spent, paid_elsewhere=frozenset(), month=None)
     }
 
 
+def claude_shares(goals, suggested):
+    """{goal id: monthly amount} from Claude's suggested monthly saving, for goals without their own amount.
+
+    Claude suggests ONE monthly saving for all goals together. Goals where the user typed an
+    amount keep it, and that amount comes out of Claude's total first. What is left is given to
+    the other goals in order, and a goal never gets more than it still needs. The browser
+    (claudeShares in app.js) does the same math, so edits update instantly.
+    """
+    active = [g for g in goals if float(g["target"]) > float(g.get("saved", 0))]
+    pool = max(float(suggested or 0) - sum(float(g.get("monthly") or 0) for g in active), 0)
+    shares = {}
+    for g in active:
+        if g.get("monthly"):
+            continue
+        share = round(min(pool, float(g["target"]) - float(g.get("saved", 0))), 2)
+        shares[g["id"]] = share
+        pool -= share
+    return shares
+
+
+def goal_monthly(goal, shares):
+    """The monthly amount used for a goal: the user's own, or its share of Claude's suggestion."""
+    return float(goal.get("monthly") or 0) or shares.get(goal["id"], 0.0)
+
+
 def goal_timeline(goal, monthly_saving):
     """Months to reach a goal and the month it would be reached ("YYYY-MM"); the browser words it."""
     remaining = max(float(goal["target"]) - float(goal.get("saved", 0)), 0)

@@ -320,11 +320,17 @@ def goals_with_paypal_balance(goals, transactions):
     return out
 
 
-def plan_impact(goals, pace_now, plan_monthly):
-    """Before / after for the first goal not reached yet: today's saving pace vs Claude's plan."""
-    goal = next((g for g in goals if float(g["target"]) > float(g.get("saved", 0))), None)
-    if not goal or plan_monthly <= 0:
+def plan_impact(goals, pace_now, shares):
+    """Before / after for the first goal not reached yet: today's saving pace vs the plan.
+
+    The plan uses the same monthly amount the Goals tab shows for that goal (the user's own, or
+    its share of Claude's suggestion), so both screens tell the same story.
+    """
+    goal = next((g for g in goals if float(g["target"]) > float(g.get("saved", 0))
+                 and budget.goal_monthly(g, shares) > 0), None)
+    if not goal:
         return None
+    plan_monthly = budget.goal_monthly(goal, shares)
     now = budget.goal_timeline(goal, pace_now)
     with_plan = budget.goal_timeline(goal, plan_monthly)
     return {
@@ -398,6 +404,7 @@ def analysis():
     monthly_saving = float(result.get("suggested_monthly_saving") or 0)
     breakdown = budget.monthly_breakdown(transactions, classifications, months)
     health = budget.health_breakdown(plan, len(current_anomalies))
+    shares = budget.claude_shares(goals, monthly_saving)
 
     return jsonify({
         "source": current["source"],
@@ -411,7 +418,7 @@ def analysis():
         "budget": plan,
         "score": health["score"],
         "health": health,
-        "plan_impact": plan_impact(goals, budget.average_saved(breakdown, income), monthly_saving),
+        "plan_impact": plan_impact(goals, budget.average_saved(breakdown, income), shares),
         "alerts": budget.alerts(plan),
         "anomalies": anomalies,
         "headline": result["headline"],
@@ -421,9 +428,10 @@ def analysis():
         "suggested_monthly_saving": round(monthly_saving, 2),
         "bills_forecast": forecast,
         "profile_is_sample": bool(profile.get("sample")),
-        # Each goal uses the monthly amount the user chose for it, or Claude's suggestion.
+        # Each goal uses the monthly amount the user chose for it, or its share of Claude's suggestion.
         "goals": [{**g, "monthly_source": "you" if g.get("monthly") else "claude",
-                   **budget.goal_timeline(g, float(g.get("monthly") or monthly_saving))} for g in goals],
+                   "claude_share": shares.get(g["id"], 0.0),
+                   **budget.goal_timeline(g, budget.goal_monthly(g, shares))} for g in goals],
         "currency": home,
         "language": language,
         "fx": {
@@ -757,6 +765,27 @@ def history():
             return d["history"]
         return jsonify(list(reversed(update_my_store(change))))
     return jsonify(list(reversed(store["history"])))
+
+
+def warm_up_ai():
+    """Prepare Claude's analysis of the sample starting data, in every language, right after the
+    server starts. The first judge to open FinAI (in English or Spanish) then sees Claude's
+    insights at once instead of waiting. Uses a throwaway visitor that is deleted afterwards."""
+    visitor = storage.new_visitor_id()
+    cookie = {"Cookie": f"{VISITOR_COOKIE}={visitor}"}
+    client = app.test_client()
+    try:
+        for language in LANGUAGES:
+            client.post("/api/settings", json={"language": language}, headers=cookie)
+            client.get("/api/analysis", headers=cookie)
+    except Exception:
+        pass  # only a speed-up: visitors still get the analysis the normal way
+    finally:
+        storage.reset_store(visitor)
+
+
+if ai_analysis.is_configured() and os.getenv("WARM_UP", "1") == "1":
+    threading.Thread(target=warm_up_ai, daemon=True).start()
 
 
 if __name__ == "__main__":

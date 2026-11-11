@@ -1,53 +1,82 @@
 """AI layer: Claude classifies each expense (need / want / luxury), flags anomalies and writes
-personalized recommendations, all in one structured-output call.
+personalized recommendations, with structured outputs.
 
-If ANTHROPIC_API_KEY is missing or the call fails, a simple keyword classifier is used instead
+To keep it fast, the work is split in two steps:
+1. Classification: transactions Claude hasn't seen yet are sent in small groups, all at the same
+   time. Each answer is remembered per transaction (storage.remember_classes), so after a new
+   payment only that one transaction is classified again.
+2. Insights: one short call writes the headline, comparison, tips and recommendation, using the
+   categories from step 1 and the same totals the app shows.
+
+If ANTHROPIC_API_KEY is missing or a call fails, a simple keyword classifier is used instead
 and the UI says so.
 """
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
 
 import budget
+import storage
 
 MODEL = "claude-opus-5-5"
+CHUNK_SIZE = 20  # transactions per classification call; the calls run at the same time
+CLASS_VERSION = 1  # bump when the classification prompt changes so old answers are not reused
 
-SYSTEM_PROMPT = """You are FinAI, a careful personal-finance assistant inside a budgeting app.
-You receive about three months of a user's transactions, grouped by month, plus the monthly
-income they typed in. The last month is the one to focus on. If its "is_current_month" is true it
-is still running; if false, it is a finished month (the user has no PayPal activity yet this month).
+ABOUT_DATA = """Amounts are already converted into the user's home currency ("currency"). When a
+purchase was made in another currency, "original" shows what was charged (for example
+"18.50 EUR"). The app only sees PayPal activity, so do not assume this is all of the person's
+spending.
 
-Tasks:
-1. Classify every OUTGOING transaction as:
-   - "need": essentials (rent, utilities, groceries, health, transport to work, insurance, debt payments)
-   - "want": discretionary but ordinary (restaurants, streaming, entertainment, delivery, hobbies)
-   - "luxury": high-cost non-essential purchases that are unusual for this person's income
-   Give a short human label (e.g. "Groceries", "Streaming") and a one-sentence reason.
-2. Mark is_anomaly=true only for spending that is unusually large or out of pattern compared with
-   this user's other months.
-3. Using the user's own budget targets in "budget_targets_percent" (percent of income for needs,
-   wants and savings; luxury counts inside wants) and the numbers provided, write:
-   - a one-sentence headline about the LAST (focus) month
-   - comparison: two or three sentences comparing the focus month with the earlier months
-     (needs, wants and luxury trends, with amounts). If the focus month is still running, say
-     "so far" when it matters.
-   - 3 to 4 short, specific, actionable insights that mention real merchants/amounts
-   - a realistic suggested_monthly_saving amount (a number, same currency)
-   - a one-paragraph recommendation
+Descriptions that start with "FinAI bill payment:" are fixed bills the user chose to pay with
+FinAI's "Pay with PayPal" button, and "FinAI savings:" are transfers to the user's own savings
+goals. They are planned on purpose: never call them unusual, suspicious, duplicated or worth
+disputing."""
 
-Amounts are already converted into the user's home currency ("currency"). When a purchase was
-made in another currency, "original" shows what was charged (for example "18.50 EUR"); you may
-mention it, e.g. as a purchase abroad. Write every text field (labels, reasons, headline,
-comparison, insights, recommendation) in the language given in "answer_language".
+CLASSIFY_PROMPT = """You are FinAI, a careful personal-finance assistant inside a budgeting app.
+You receive "to_classify": some of a user's transactions. "all_spending" lists all of their
+spending of the last three months (month, description, amount) for context only, and
+"monthly_income" is the income they typed in.
+
+For every item in "to_classify" whose direction is "out", return one entry in "classifications":
+- category: "need" for essentials (rent, utilities, groceries, health, transport to work,
+  insurance, debt payments); "want" for discretionary but ordinary spending (restaurants,
+  streaming, entertainment, delivery, hobbies); "luxury" for high-cost non-essential purchases
+  that are unusual for this person's income
+- label: a short human label (e.g. "Groceries", "Streaming")
+- reason: one short sentence, at most 15 words
+- is_anomaly: true only for spending that is unusually large or out of pattern compared with this
+  user's other months in "all_spending"
 
 Translations: if "answer_language" is not English, return in "translations" one entry for EVERY
-transaction id you received (outgoing and incoming), with its description translated into that
-language. Keep proper names as they are ("Cafe in Paris - Le Petit Bistro" -> "Café en París -
-Le Petit Bistro", "Designer handbag" -> "Bolso de diseñador"). If it is English, return an empty list.
+item in "to_classify" (any direction) with its description translated into that language. Keep
+proper names as they are ("Cafe in Paris - Le Petit Bistro" -> "Café en París - Le Petit
+Bistro"). If it is English, return an empty list.
+
+Write labels, reasons and translations in "answer_language".
+
+""" + ABOUT_DATA
+
+INSIGHTS_PROMPT = """You are FinAI, a careful personal-finance assistant inside a budgeting app.
+You receive about three months of a user's transactions, grouped by month, plus the monthly
+income they typed in. The app has already classified every outgoing transaction ("category":
+need, want or luxury; luxury counts inside wants) and gives each month's totals by category.
+The last month is the one to focus on. If its "is_current_month" is true it is still running; if
+false, it is a finished month (the user has no PayPal activity yet this month).
+
+Using the user's own budget targets in "budget_targets_percent" and the numbers provided, write:
+- headline: one sentence about the LAST (focus) month
+- comparison: two or three sentences comparing the focus month with the earlier months (needs,
+  wants and luxury trends, with amounts). If the focus month is still running, say "so far" when
+  it matters.
+- insights: 3 to 4 short, specific, actionable tips that mention real merchants/amounts
+- suggested_monthly_saving: a realistic monthly saving (a number, same currency)
+- recommendation: one short paragraph (at most 90 words)
 
 Stay consistent with the numbers the app shows next to your text:
+- Use the category totals given; do not re-classify transactions.
 - The app uses "monthly_income_declared" as the income for every month (not "income_received").
 - Each month gives "spent_total", "moved_to_savings_goals" and "left_from_declared_income". For a
   finished month the app shows moved_to_savings_goals + left_from_declared_income as "saved";
@@ -57,10 +86,13 @@ Stay consistent with the numbers the app shows next to your text:
   within the targets, say so plainly in the headline, and present earlier months' habits as
   patterns to watch, not as current failures.
 
-Be concrete and kind. Do not give investment advice. Base everything only on the data provided;
-the app only sees PayPal activity, so do not assume this is all of the person's spending."""
+Write every text in the language given in "answer_language", and name the three categories with
+the words in "category_words", which are the words the app shows. Be concrete and kind. Do not give
+investment advice.
 
-RESULT_SCHEMA = {
+""" + ABOUT_DATA
+
+CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
         "classifications": {
@@ -87,13 +119,21 @@ RESULT_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+    },
+    "required": ["classifications", "translations"],
+    "additionalProperties": False,
+}
+
+INSIGHTS_SCHEMA = {
+    "type": "object",
+    "properties": {
         "headline": {"type": "string"},
         "comparison": {"type": "string"},
         "insights": {"type": "array", "items": {"type": "string"}},
         "suggested_monthly_saving": {"type": "number"},
         "recommendation": {"type": "string"},
     },
-    "required": ["classifications", "translations", "headline", "comparison", "insights", "suggested_monthly_saving", "recommendation"],
+    "required": ["headline", "comparison", "insights", "suggested_monthly_saving", "recommendation"],
     "additionalProperties": False,
 }
 
@@ -105,7 +145,7 @@ def is_configured():
 def cache_key(transactions, profile, goals, months):
     raw = json.dumps(
         {
-            "version": 3,  # bump when the prompt or schema changes so old answers are not reused
+            "version": 5,  # bump when the prompt or schema changes so old answers are not reused
             # Which months, and whether the last one is still running: an analysis written
             # "so far in November" must not be shown in December, when November is finished.
             "months": [(m["key"], m["current"]) for m in months],
@@ -126,57 +166,35 @@ def _is_saving(t):
     return t.get("kind") == "saving"
 
 
+def _is_spending(t):
+    return t["direction"] == "out" and not _is_saving(t)
+
+
+def is_finai_payment(t):
+    """Payments and transfers the user made on purpose with FinAI's buttons."""
+    d = t["description"].lower()
+    return d.startswith("finai bill payment:") or d.startswith("finai savings:")
+
+
 LANGUAGE_NAMES = {"en": "English", "es": "Spanish (Latin American)"}
+CATEGORY_WORDS = {  # the words the app's screens use, so Claude's text matches them
+    "en": {"need": "needs", "want": "wants", "luxury": "luxury"},
+    "es": {"need": "necesidades", "want": "deseos", "luxury": "lujos"},
+}
 
 
-def _outgoing_row(t):
-    row = {"id": t["id"], "date": t["date"], "description": t["description"], "amount": t["amount"]}
-    if t.get("converted"):
-        row["original"] = f"{t['original_amount']:.2f} {t['original_currency']}"
-    return row
+def _original(t):
+    return f"{t['original_amount']:.2f} {t['original_currency']}" if t.get("converted") else None
 
 
-def _build_user_message(transactions, months, profile, goals, language="en"):
-    by_month = []
-    income = float(profile.get("monthly_income") or 0)
-    for m in months:
-        in_month = [t for t in transactions if t["date"].startswith(m["key"])]
-        spent = sum(t["amount"] for t in in_month if t["direction"] == "out" and not _is_saving(t))
-        moved = sum(t["amount"] for t in in_month if _is_saving(t))
-        by_month.append({
-            "month": m["label"],
-            "is_current_month": m["current"],
-            "income_received": round(sum(t["amount"] for t in in_month if t["direction"] == "in"), 2),
-            "spent_total": round(spent, 2),
-            "moved_to_savings_goals": round(moved, 2),
-            "left_from_declared_income": round(max(income - spent - moved, 0), 2),
-            "outgoing_transactions": [
-                _outgoing_row(t) for t in in_month if t["direction"] == "out" and not _is_saving(t)
-            ],
-            "incoming_and_savings": [
-                {"id": t["id"], "description": t["description"], "amount": t["amount"]}
-                for t in in_month if t["direction"] == "in" or _is_saving(t)
-            ],
-        })
-    payload = {
-        "answer_language": LANGUAGE_NAMES.get(language, "English"),
-        "currency": profile.get("currency", "USD"),
-        "monthly_income_declared": profile.get("monthly_income", 0),
-        "budget_targets_percent": budget.targets(profile),
-        "savings_goals": [{"name": g["name"], "target": g["target"], "saved": g.get("saved", 0)} for g in goals],
-        "months": by_month,
-    }
-    return "Here is the user's data as JSON:\n" + json.dumps(payload, indent=2)
-
-
-def _call_claude(user_message):
+def _call_claude(system, user_message, schema, effort):
     client = anthropic.Anthropic()
     request = dict(
         model=MODEL,
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
+        system=system,
         messages=[{"role": "user", "content": user_message}],
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": RESULT_SCHEMA}},
+        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     )
     try:
         # Server-side fallback: if the main model declines, the API retries on a fallback model.
@@ -192,6 +210,123 @@ def _call_claude(user_message):
         raise RuntimeError("The AI response was cut off.")
     text = next(b.text for b in response.content if b.type == "text")
     return json.loads(text)
+
+
+# ---------- Step 1: classification, remembered per transaction ----------
+
+def _class_key(t, profile, language):
+    """One remembered answer per transaction, language, currency and income (luxury depends on income)."""
+    raw = json.dumps([CLASS_VERSION, t["id"], t["description"], round(t["amount"], 2), t["direction"],
+                      profile.get("currency"), profile.get("monthly_income"), language])
+    return hashlib.sha256(raw.encode()).hexdigest()[:20]
+
+
+def _classify_message(chunk, transactions, profile, language):
+    payload = {
+        "answer_language": LANGUAGE_NAMES.get(language, "English"),
+        "currency": profile.get("currency", "USD"),
+        "monthly_income": profile.get("monthly_income", 0),
+        "to_classify": [{"id": t["id"], "direction": t["direction"], "date": t["date"],
+                         "description": t["description"], "amount": t["amount"],
+                         **({"original": _original(t)} if t.get("converted") else {})} for t in chunk],
+        "all_spending": [{"month": t["date"][:7], "description": t["description"], "amount": t["amount"]}
+                         for t in transactions if _is_spending(t)],
+    }
+    return "Here is the data as JSON:\n" + json.dumps(payload)
+
+
+def classify(transactions, profile, language="en"):
+    """Return (classifications, translations), asking Claude only about transactions it hasn't seen."""
+    translate = language != "en"
+    wanted = [t for t in transactions if _is_spending(t) or translate]
+    keys = {t["id"]: _class_key(t, profile, language) for t in wanted}
+    cache = storage.load_class_cache()
+    missing = [t for t in wanted if keys[t["id"]] not in cache]
+    if missing:
+        chunks = [missing[i:i + CHUNK_SIZE] for i in range(0, len(missing), CHUNK_SIZE)]
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            answers = list(pool.map(lambda chunk: _call_claude(
+                CLASSIFY_PROMPT, _classify_message(chunk, transactions, profile, language),
+                CLASSIFY_SCHEMA, "low"), chunks))
+        new = {}
+        for chunk, answer in zip(chunks, answers):
+            by_id = {c["id"]: c for c in answer["classifications"]}
+            translated = {x["id"]: x["text"] for x in answer["translations"]}
+            for t in chunk:
+                c = by_id.get(t["id"])
+                if _is_spending(t) and not c:
+                    continue  # Claude skipped it: not remembered, the keyword rule covers it below
+                new[keys[t["id"]]] = {
+                    "c": {k: c[k] for k in ("category", "label", "is_anomaly", "reason")} if c and _is_spending(t) else None,
+                    "tr": translated.get(t["id"]),
+                }
+        storage.remember_classes(new)
+        cache.update(new)
+
+    classifications, translations = [], []
+    rule_reason = _text(language)["reason"]
+    for t in wanted:
+        hit = cache.get(keys[t["id"]])
+        if hit and hit.get("tr"):
+            translations.append({"id": t["id"], "text": hit["tr"]})
+        if not _is_spending(t):
+            continue
+        if hit and hit.get("c"):
+            c = {**hit["c"], "id": t["id"]}
+        else:
+            c = {"id": t["id"], "category": _rule_category(t["description"], t["amount"], profile.get("monthly_income") or 0),
+                 "label": t["description"][:30], "is_anomaly": False, "reason": rule_reason}
+        if is_finai_payment(t):
+            c["is_anomaly"] = False  # paid on purpose with FinAI: never "unusual"
+        classifications.append(c)
+    return classifications, translations
+
+
+# ---------- Step 2: insights ----------
+
+def _insights_message(transactions, months, profile, goals, classifications, language="en"):
+    by_id = {c["id"]: c for c in classifications}
+    by_month = []
+    income = float(profile.get("monthly_income") or 0)
+    for m in months:
+        in_month = [t for t in transactions if t["date"].startswith(m["key"])]
+        totals = budget.spending_by_category(in_month, classifications)
+        spent = sum(t["amount"] for t in in_month if _is_spending(t))
+        moved = sum(t["amount"] for t in in_month if _is_saving(t))
+        rows = []
+        for t in in_month:
+            if not _is_spending(t):
+                continue
+            c = by_id.get(t["id"], {})
+            row = {"date": t["date"], "description": t["description"], "amount": t["amount"],
+                   "category": c.get("category"), "label": c.get("label")}
+            if c.get("is_anomaly"):
+                row["unusual"] = True
+            if t.get("converted"):
+                row["original"] = _original(t)
+            rows.append(row)
+        by_month.append({
+            "month": m["label"],
+            "is_current_month": m["current"],
+            "income_received": round(sum(t["amount"] for t in in_month if t["direction"] == "in"), 2),
+            "spent_total": round(spent, 2),
+            "spent_by_category": totals,
+            "moved_to_savings_goals": round(moved, 2),
+            "left_from_declared_income": round(max(income - spent - moved, 0), 2),
+            "outgoing_transactions": rows,
+            "incoming_and_savings": [{"description": t["description"], "amount": t["amount"]}
+                                     for t in in_month if t["direction"] == "in" or _is_saving(t)],
+        })
+    payload = {
+        "answer_language": LANGUAGE_NAMES.get(language, "English"),
+        "category_words": CATEGORY_WORDS.get(language, CATEGORY_WORDS["en"]),
+        "currency": profile.get("currency", "USD"),
+        "monthly_income_declared": profile.get("monthly_income", 0),
+        "budget_targets_percent": budget.targets(profile),
+        "savings_goals": [{"name": g["name"], "target": g["target"], "saved": g.get("saved", 0)} for g in goals],
+        "months": by_month,
+    }
+    return "Here is the user's data as JSON:\n" + json.dumps(payload, indent=1)
 
 
 # ---------- Rule-based fallback (no API key) ----------
@@ -266,7 +401,7 @@ def fallback_analysis(transactions, months, profile, language="en"):
             "id": t["id"],
             "category": category,
             "label": t["description"][:30],
-            "is_anomaly": bool(income) and t["amount"] > income * 0.15 and category != "need",
+            "is_anomaly": bool(income) and t["amount"] > income * 0.15 and category != "need" and not is_finai_payment(t),
             "reason": text["reason"],
         })
     return {
@@ -285,7 +420,11 @@ def analyze(transactions, months, profile, goals, language="en"):
     if not is_configured():
         return fallback_analysis(transactions, months, profile, language), "rules"
     try:
-        return _call_claude(_build_user_message(transactions, months, profile, goals, language)), "ai"
+        classifications, translations = classify(transactions, profile, language)
+        insights = _call_claude(INSIGHTS_PROMPT,
+                                _insights_message(transactions, months, profile, goals, classifications, language),
+                                INSIGHTS_SCHEMA, "medium")
+        return {"classifications": classifications, "translations": translations, **insights}, "ai"
     except Exception as exc:  # keep the app usable during the demo
         result = fallback_analysis(transactions, months, profile, language)
         result["headline"] = _text(language)["unavailable"].format(error=type(exc).__name__)

@@ -114,6 +114,25 @@ def remember_ai(key, value, keep):
         _write_json(AI_CACHE_PATH, dict(list(cache.items())[-keep:]))
 
 
+CLASS_CACHE_PATH = os.path.join(DATA_DIR, "ai_classes.json")
+CLASS_CACHE_SIZE = 5000
+
+
+def load_class_cache():
+    """Claude's category, label, reason and translation for each transaction it has already seen."""
+    return _read_json(CLASS_CACHE_PATH, {})
+
+
+def remember_classes(new):
+    """Add answers to the per-transaction cache, keeping only the newest CLASS_CACHE_SIZE."""
+    if not new:
+        return
+    with _lock:
+        cache = load_class_cache()
+        cache.update(new)
+        _write_json(CLASS_CACHE_PATH, dict(list(cache.items())[-CLASS_CACHE_SIZE:]))
+
+
 PAYOUT_LOG_PATH = os.path.join(DATA_DIR, "payout_log.json")
 
 

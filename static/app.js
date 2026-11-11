@@ -279,7 +279,8 @@ function renderDonut(a) {
   $("#donut-legend").innerHTML =
     row(t("legend.needs"), "var(--need)", need, t("home.target", { amount: money(b.needs.target), pct: pctText(p.needs) }),
       status(need, b.needs.target, false)) +
-    row(t("legend.wants"), "var(--want)", want, t("home.wants_target", { amount: money(b.wants.target), pct: pctText(p.wants) }),
+    // The status compares wants + luxury with the target, so the row shows that total too.
+    row(t("legend.wants"), "var(--want)", want, t("home.wants_target", { total: share(b.wants.actual), amount: money(b.wants.target), pct: pctText(p.wants) }),
       status(b.wants.actual, b.wants.target, false)) +
     row(t("legend.luxury"), "var(--luxury)", luxury, t("home.inside_wants"), null) +
     row(t("legend.savings"), "var(--save)", saved, t("home.target", { amount: money(b.savings.target), pct: pctText(p.savings) }),
@@ -343,9 +344,11 @@ function renderHome(a) {
       <strong>${t("home.per_month", { amount: money(a.suggested_monthly_saving) })}</strong></div>`;
   if (a.ai_pending) {
     $("#suggest-box").innerHTML = "";
-  } else if (a.suggested_monthly_saving > 0 && goals.length) {
-    $("#suggest-box").innerHTML = suggested + `<button class="btn" id="btn-save-now">${esc(t("home.save_toward", { goal: itemName(goals[0]) }))}</button>`;
-    $("#btn-save-now").onclick = () => contribute(goals[0], a.suggested_monthly_saving);
+  } else if (a.suggested_monthly_saving > 0 && goals.some((g) => g.status !== "reached" && goalMonthly(g) > 0)) {
+    // The first goal that still needs money, with the same monthly amount the Goals tab shows.
+    const goal = goals.find((g) => g.status !== "reached" && goalMonthly(g) > 0);
+    $("#suggest-box").innerHTML = suggested + `<button class="btn" id="btn-save-now">${esc(t("home.save_toward", { goal: itemName(goal) }))}</button>`;
+    $("#btn-save-now").onclick = () => contribute(goal, goalMonthly(goal));
   } else if (a.suggested_monthly_saving > 0) {
     $("#suggest-box").innerHTML = suggested + `<button class="btn ghost" onclick="showTab('goals')">${t("home.create_goal")}</button>`;
   } else {
@@ -576,8 +579,24 @@ function closeSheet() {
 }
 
 // ---------- Goals ----------
-function goalMonthly(g, monthlySaving) {
-  return Number(g.monthly) || monthlySaving || 0;
+// Claude suggests ONE monthly saving for all goals together. Goals with your own amount keep it
+// (it comes out of Claude's total first); the rest is shared out in order, and a goal never gets
+// more than it still needs. Same math as budget.claude_shares on the server.
+function claudeShares(goals, monthlySaving) {
+  const active = goals.filter((g) => Number(g.target) > Number(g.saved || 0));
+  let pool = Math.max((monthlySaving || 0) - active.reduce((s, g) => s + (Number(g.monthly) || 0), 0), 0);
+  const shares = {};
+  for (const g of active) {
+    if (Number(g.monthly)) continue;
+    shares[g.id] = Math.round(Math.min(pool, Number(g.target) - Number(g.saved || 0)) * 100) / 100;
+    pool -= shares[g.id];
+  }
+  return shares;
+}
+
+// The monthly amount used for a goal: your own, or its share of Claude's suggestion.
+function goalMonthly(g) {
+  return Number(g.monthly) || Number(g.claude_share) || 0;
 }
 
 function goalEta(g, monthlySaving) {
@@ -592,7 +611,9 @@ function goalPlan(g, monthly) {
   if (remaining === 0) return { status: "reached", months: 0, eta: null };
   if (!(monthly > 0)) return { status: "no_saving", months: null, eta: null };
   const months = Math.ceil(remaining / monthly);
-  return { status: "on_track", months, eta: shiftMonth(state.billsData.today_month || state.billsData.month, months) };
+  const bills = state.billsData || {};
+  const thisMonth = bills.today_month || bills.month || new Date().toISOString().slice(0, 7);
+  return { status: "on_track", months, eta: shiftMonth(thisMonth, months) };
 }
 
 function renderGoalPlan(goals, monthlySaving) {
@@ -610,6 +631,14 @@ function renderGoalPlan(goals, monthlySaving) {
 }
 
 function renderGoals(goals, monthlySaving) {
+  // Share Claude's amount again (an edit to one goal changes what the others get) and update each ETA.
+  const shares = claudeShares(goals, monthlySaving);
+  goals.forEach((g) => {
+    g.claude_share = shares[g.id] || 0;
+    Object.assign(g, goalPlan(g, goalMonthly(g)));
+  });
+  // What a goal would get if it went back to Claude's suggestion.
+  const shareIfReset = (g) => claudeShares(goals.map((x) => (x.id === g.id ? { ...x, monthly: null } : x)), monthlySaving)[g.id] || 0;
   $("#goal-list").innerHTML = goals.length ? goals.map((g) => {
     const pct = g.target > 0 ? Math.min((g.saved / g.target) * 100, 100) : 0;
     return `<div class="goal">
@@ -624,7 +653,7 @@ function renderGoals(goals, monthlySaving) {
         <div class="monthly-row">
           <input name="monthly" type="number" min="0" step="0.01" value="${goalMonthly(g, monthlySaving).toFixed(2)}">
           <button class="btn" type="submit">${esc(t("edit.save"))}</button>
-          ${g.monthly ? `<button class="btn ghost" type="button" data-monthly-reset="${g.id}">${esc(t("goals.monthly_reset", { amount: money(monthlySaving) }))}</button>` : ""}
+          ${g.monthly ? `<button class="btn ghost" type="button" data-monthly-reset="${g.id}">${esc(t("goals.monthly_reset", { amount: money(shareIfReset(g)) }))}</button>` : ""}
         </div>
         <div class="small muted" data-monthly-preview="${g.id}"></div>
       </form>

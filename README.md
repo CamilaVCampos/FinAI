@@ -27,7 +27,7 @@ PayPal, always after you confirm.
 
 | Feature | PayPal | AI (Claude) |
 |---|---|---|
-| **Spending analysis**: reads the last 30 days of transactions | Transaction Search API | Classifies each expense as *need / want / luxury* and flags unusual spending |
+| **Spending analysis**: reads the last 3 months of transactions | Transaction Search API | Classifies each expense as *need / want / luxury* and flags unusual spending |
 | **Budget and health score**: 50/30/20 targets vs. actuals, a 0–100 score and alerts | Real transaction data | Headline, merchant-level insights and a recommendation |
 | **Savings goals**: AI-suggested monthly amount, ETA per goal and a "Transfer to goal" button | **Payouts API** (real sandbox transfer) | Suggests a realistic monthly saving |
 | **Payment calendar**: fixed bills on a monthly calendar, money free after bills, "Pay with PayPal" button | **Payouts API** (real sandbox payment) | Included in the budget analysis |
@@ -61,7 +61,9 @@ So that several judges can try it at the same time without stepping on each othe
 - The Home screen focuses on the latest month with at least 5 PayPal sandbox transactions, so a
   single payment early in a new month doesn't leave everyone looking at an almost empty month.
 - Claude's analyses are cached and shared between visitors with the same settings, which keeps the
-  app fast and the API cost low.
+  app fast and the API cost low. Claude remembers each transaction it has already classified, so a
+  new payment only needs that one transaction classified again, and the server prepares the sample
+  analysis in English and Spanish as soon as it starts.
 
 ## Tools used
 
@@ -70,7 +72,9 @@ So that several judges can try it at the same time without stepping on each othe
   - Transaction Search API: `GET /v1/reporting/transactions` to read activity, in 31-day windows
   - Payouts API: `POST /v1/payments/payouts` to execute savings transfers and bill payments
 - **Claude API (Anthropic)**: model `claude-opus-5-5` with **structured outputs** (JSON schema),
-  so classification and recommendations come back in one validated response. A server-side
+  in two steps: (1) new transactions are classified in small groups sent at the same time, and each
+  answer is remembered per transaction; (2) one short call writes the headline, month comparison,
+  tips and recommendation from those categories and the same totals the app shows. A server-side
   fallback is enabled, and a keyword classifier keeps the app usable if the AI is unavailable.
 - **Frankfurter API** (<https://frankfurter.dev>): free, keyless exchange rates published by the
   European Central Bank, used to convert foreign charges and the user's home currency
@@ -92,6 +96,7 @@ Flask app (app.py)
    ├── fx.py              → Frankfurter exchange rates (currency conversion)
    └── storage.py         → data/visitors/<id>.json per visitor (profile, goals, bills, history)
                             + data/ai_cache.json (Claude analyses shared between visitors)
+                            + data/ai_classes.json (Claude's answer for each transaction)
 ```
 
 ## Run it locally
@@ -133,7 +138,8 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
    savings against your targets, month-by-month bars, alerts and Claude's insights. The app starts
    with a labeled sample profile ($4,200 USD monthly income) and a **"Try FinAI in 3 steps"** guide.
    Tap the **Health** score to see how it is calculated. The numbers appear at once; the first
-   Claude analysis can take about a minute and fills in by itself. Claude's card also shows how long
+   Claude analysis for new settings (for example another currency) takes about 30–45 seconds and
+   fills in by itself. Claude's card also shows how long
    your goal takes at today's pace vs. with its plan.
 3. **Profile**: change the income or the budget targets (needs / wants / savings %). Every screen
    and Claude's advice update. Your changes are only visible to you.
