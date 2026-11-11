@@ -1,0 +1,37 @@
+# Render Blueprint: deploys FinAI as one web service.
+# Render > New > Blueprint > pick this repo. Values marked "sync: false" are asked for in the
+# dashboard (secrets never live in the repo).
+services:
+  - type: web
+    name: finai
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # One process (the JSON storage and Claude's "ask only once" lock live in memory) with several
+    # threads, so one visitor waiting for Claude (20-45 s) doesn't block the others. The long
+    # timeout lets Claude's first analysis finish.
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 180 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/status
+    envVars:
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: SAVINGS_RECEIVER_EMAIL
+        sync: false
+      - key: BILLS_RECEIVER_EMAIL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: CURRENCY
+        value: USD
+      - key: PAYOUT_MAX_AMOUNT
+        value: "150"
+      - key: PAYOUT_DAILY_LIMIT
+        value: "400"
+      - key: PAYOUTS_PER_VISITOR_DAY
+        value: "5"
+      - key: WARM_UP
+        value: "1"

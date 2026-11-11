@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from dotenv import load_dotenv
 import flask
 from flask import Flask, jsonify, render_template, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 
@@ -21,6 +22,9 @@ import sample_data  # noqa: E402
 import storage  # noqa: E402
 
 app = Flask(__name__)
+# On Render the app sits behind a proxy that handles HTTPS. This lets Flask see the real
+# https:// request, so the visitor cookie is marked Secure.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
 def error(message, status=400, code=None, **details):

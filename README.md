@@ -131,6 +131,14 @@ look around right away.
 ### 2. Claude setup
 Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 
+### 3. Deploy on Render (optional)
+The repo includes a Render Blueprint (`render.yaml`). In Render choose **New → Blueprint**, pick
+this repository, and fill in the secret values it asks for (PayPal client ID and secret, the two
+sandbox receiver emails and the Anthropic key). It runs `gunicorn` with one process and several
+threads, so a visitor waiting for Claude doesn't block the others. On the free plan the files in
+`data/` are reset when the service restarts, which only clears the demo's saved visitor data and
+caches; the sample analysis is prepared again at startup.
+
 ## Testing instructions for judges
 
 1. Open the hosted demo (or run it locally as described above).
