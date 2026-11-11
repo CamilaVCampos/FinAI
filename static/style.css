@@ -13,6 +13,7 @@
   --luxury: #e0457b;
   --save: #14a87a;
   --auto: #7c5ce6;
+  --unspent: #c6d0e4;     /* money not spent yet in a running month: not saved yet */
   --danger: #d63c4f;
   --radius: 18px;
 }
@@ -37,6 +38,7 @@ h3 { margin: 0 0 14px; font-size: 16px; font-weight: 700; display: flex; align-i
 .banner { max-width: 900px; margin: 0 auto 4px; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.45; background: #fff8e5; border: 1px solid #f3dfa6; color: #7a5200; }
 .banner.live { background: var(--primary-soft); border-color: #cad8fb; color: var(--primary-dark); }
 @media (max-width: 932px) { .banner { margin: 0 16px 4px; } }
+.banner-demo { display: block; margin-top: 4px; font-size: 12px; opacity: .8; }
 
 main { max-width: 900px; margin: 0 auto; padding: 12px 16px; }
 .tab { display: none; }
@@ -225,3 +227,43 @@ main { max-width: 900px; margin: 0 auto; padding: 12px 16px; }
 .pct-total.bad { color: var(--danger); }
 .month-right { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; justify-content: flex-end; }
 .month-right .over-text { color: var(--danger); font-weight: 600; font-size: 12px; }
+
+/* Not spent yet (running month) */
+.unspent-text { color: var(--muted); font-weight: 600; }
+
+/* Refresh: top button and pull-to-refresh strip */
+.top-right { display: flex; align-items: center; gap: 8px; }
+#btn-top-refresh.spin i { animation: spin 0.9s linear infinite; }
+.ptr { height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; color: var(--muted); transition: height .15s ease; }
+.ptr.ready, .ptr.loading { color: var(--primary); }
+.ptr.ready i { transform: rotate(180deg); }
+.ptr.loading { height: 44px; }
+.ptr.loading i { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Calendar navigation */
+.cal-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cal-nav h3 { margin: 0; min-width: 9.5em; text-align: center; text-transform: capitalize; }
+.cal-nav .icon-btn { width: 32px; height: 32px; }
+.cal-top { align-items: center; gap: 8px; flex-wrap: wrap; }
+.cal-item.missed { background: #e6e9f0; color: var(--muted); }
+.sw.missed { background: #e6e9f0; }
+#calendar.busy { opacity: .5; pointer-events: none; }
+
+/* Editing a transaction */
+.edit-box { margin: 10px 0 14px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 10px; }
+.edit-box label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.edit-box input, .edit-box select { font: inherit; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); }
+.src.edited { background: #efe9fd; color: #5b3fc4; }
+.src.pending { background: #fff3dc; color: #8a5a00; }
+
+/* Goals: monthly contribution */
+.goal-eta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.link-btn { border: 0; background: none; color: var(--primary); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; padding: 0; }
+.monthly-form { margin: 8px 0; display: grid; gap: 6px; }
+.monthly-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.monthly-row input { flex: 1; min-width: 120px; font: inherit; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.goal-plan { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: var(--primary-soft); border-radius: 12px; padding: 10px 12px; }
+.goal-plan > div { display: grid; gap: 2px; }
+.goal-plan.over { background: #fdecef; }
+.over-text { color: var(--danger); font-weight: 600; }

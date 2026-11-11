@@ -3,9 +3,10 @@
 Run locally:  python app.py   ->  http://localhost:5000
 """
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
+import flask
 from flask import Flask, jsonify, render_template, request
 
 load_dotenv()
@@ -20,8 +21,51 @@ import storage  # noqa: E402
 app = Flask(__name__)
 
 
-def error(message, status=400):
-    return jsonify({"error": message}), status
+def error(message, status=400, code=None):
+    body = {"error": message}
+    if code:
+        body["code"] = code  # lets the browser show a friendly, translated message
+    return jsonify(body), status
+
+
+# ---------- Visitors: each person trying the demo gets their own copy of the data ----------
+
+VISITOR_COOKIE = "finai_visitor"
+VISITOR_COOKIE_DAYS = 90
+
+
+@app.before_request
+def identify_visitor():
+    """Read the visitor id from the cookie, or make a new one for a first-time visitor."""
+    visitor = request.cookies.get(VISITOR_COOKIE, "")
+    flask.g.new_visitor = not storage.is_visitor_id(visitor)
+    flask.g.visitor = storage.new_visitor_id() if flask.g.new_visitor else visitor
+
+
+@app.after_request
+def remember_visitor(response):
+    if getattr(flask.g, "new_visitor", False):
+        response.set_cookie(VISITOR_COOKIE, flask.g.visitor, max_age=VISITOR_COOKIE_DAYS * 24 * 3600,
+                            httponly=True, samesite="Lax", secure=request.is_secure)
+    return response
+
+
+def my_store():
+    return storage.load_store(flask.g.visitor)
+
+
+def update_my_store(change_fn):
+    return storage.update_store(change_fn, flask.g.visitor)
+
+
+def payout_error(exc):
+    """Turn a failed PayPal payout into a clear message (with a code the browser can translate)."""
+    text = str(exc)
+    if "INSUFFICIENT_FUNDS" in text:
+        return error("The PayPal sandbox account doesn't have enough test money right now, so nothing "
+                     "was sent. This is a shared demo account: try a smaller amount or try again later.",
+                     502, "insufficient_funds")
+    return error(f"PayPal could not complete the payment, so nothing was sent. ({text[:160]})", 502, "payout_failed")
 
 
 HISTORY_MONTHS = 2  # months shown before the focus month
@@ -46,6 +90,43 @@ def is_test_funding(t):
     return text == "initial balance" or text.startswith("sandbox funding") or from_test_buyer
 
 
+def payout_note(entry):
+    """The note FinAI put on a payout: the PayPal transaction carries the same text."""
+    if entry.get("note"):
+        return entry["note"]
+    if entry.get("type") == "saving":
+        return f"FinAI savings: {entry.get('goal')}"
+    return f"FinAI bill payment: {entry.get('bill')}"
+
+
+def pending_transfers(history, real, first_key):
+    """FinAI payouts that PayPal's Transaction Search doesn't list yet (it can lag a few hours).
+
+    They count right away, marked `pending`, so "money left" is correct the moment you pay.
+    Once PayPal lists the payout (same note and amount), the PayPal row is used instead.
+    """
+    paypal_out = [t for t in real if t["direction"] == "out"]
+    pending = []
+    for h in history:
+        if not h.get("payout_batch_id") or h["date"][:7] < first_key:
+            continue
+        note = payout_note(h)
+        amount = float(h.get("sent_amount") or h["amount"])
+        earliest = (date.fromisoformat(h["date"][:10]) - timedelta(days=1)).isoformat()
+        match = next((t for t in paypal_out if t["description"] == note
+                      and abs(t["amount"] - amount) < 0.01 and t["date"] >= earliest), None)
+        if match:
+            paypal_out.remove(match)
+            continue
+        pending.append({
+            "id": f"finai-{h['payout_batch_id']}", "date": h["date"][:10], "description": note,
+            "amount": amount, "direction": "out", "currency": h.get("sent_currency") or paypal_currency(),
+            "event_code": None, "kind": "saving" if h.get("type") == "saving" else "spending",
+            "source": "paypal", "pending": True, "payer_email": "",
+        })
+    return pending
+
+
 def get_transactions(home=None, today=None):
     """Return (transactions, months, note) for the focus month plus HISTORY_MONTHS earlier ones.
 
@@ -59,7 +140,7 @@ def get_transactions(home=None, today=None):
     Amounts are converted into the `home` currency (see fx.py); the original amount is kept.
     `note` is structured so the browser can word it in any language.
     """
-    home = (home or storage.load_store()["profile"].get("currency") or paypal_currency()).upper()
+    home = (home or my_store()["profile"].get("currency") or paypal_currency()).upper()
     today = today or date.today()
     today_key = sample_data.month_key(today)
     real, problem = [], None
@@ -72,6 +153,7 @@ def get_transactions(home=None, today=None):
             # Test money added to the sandbox account is funding, not income: the opening deposit
             # ("Initial balance") and any top-up sent with the note "Sandbox funding".
             real = [t for t in paypal_client.search_transactions(start=start) if not is_test_funding(t)]
+            real += pending_transfers(my_store()["history"], real, sample_data.month_key(oldest))
         except Exception:
             problem = "read_failed"
 
@@ -143,7 +225,7 @@ def status():
 
 @app.get("/api/analysis")
 def analysis():
-    store = storage.load_store()
+    store = my_store()
     profile, goals, bills = store["profile"], store["goals"], store["bills"]
     home = (profile.get("currency") or paypal_currency()).upper()
     language = profile.get("language", "en")
@@ -151,32 +233,43 @@ def analysis():
     current = months[-1]
     current_txs = [t for t in transactions if t["date"].startswith(current["key"])]
 
-    key = ai_analysis.cache_key(transactions, profile, goals)
-    cached = store["ai_cache"].get(key)
+    # Payouts PayPal doesn't list yet are counted right away but not sent to Claude: paying a bill
+    # or saving shows up instantly instead of waiting for a new analysis. Claude sees them once
+    # PayPal lists them. Until then a bill payment counts as a need (the user can change it).
+    settled = [t for t in transactions if not t.get("pending")]
+    key = ai_analysis.cache_key(settled, profile, goals)
+    cached = storage.load_ai_cache().get(key)
     if cached and request.args.get("refresh") != "1":
         result, mode = cached["result"], cached["mode"]
     else:
-        result, mode = ai_analysis.analyze(transactions, months, profile, goals, language)
+        result, mode = ai_analysis.analyze(settled, months, profile, goals, language)
         if mode == "ai":
-            def remember(d):
-                # Keep the last few analyses (e.g. one per language) so switching back is instant.
-                cache = {k: v for k, v in d["ai_cache"].items() if k != key}
-                cache[key] = {"result": result, "mode": mode}
-                d["ai_cache"] = dict(list(cache.items())[-AI_CACHE_SIZE:])
-            storage.update_store(remember)
+            # Keep the last few analyses (e.g. one per language) so switching back is instant.
+            storage.remember_ai(key, {"result": result, "mode": mode}, AI_CACHE_SIZE)
+    pending_rows = [{"id": t["id"], "category": "need", "label": None, "is_anomaly": False, "reason": None}
+                    for t in transactions if t.get("pending") and not budget.is_saving(t)]
 
-    by_id = {c["id"]: c for c in result["classifications"]}
+    # The user's own edits (name, category) win over Claude's, without asking Claude again.
+    edits = store.get("edits", {})
+    classifications = [{**c, "category": edits.get(c["id"], {}).get("category") or c["category"]}
+                       for c in result["classifications"] + pending_rows]
+    by_id = {c["id"]: c for c in classifications}
+    claude_category = {c["id"]: c["category"] for c in result["classifications"]}
     translated = {x["id"]: x["text"] for x in result.get("translations", [])}
     enriched = []
     for t in sorted(transactions, key=lambda x: x["date"], reverse=True):
         c = by_id.get(t["id"], {})
+        edit = edits.get(t["id"], {})
         enriched.append({**t, "category": c.get("category"), "label": c.get("label"),
                          "is_anomaly": c.get("is_anomaly", False), "reason": c.get("reason"),
-                         "display_description": translated.get(t["id"], t["description"])})
+                         "claude_category": claude_category.get(t["id"]),
+                         "edited": bool(edit), "user_name": edit.get("name"),
+                         "display_description": edit.get("name") or translated.get(t["id"], t["description"])})
 
     income = float(profile.get("monthly_income") or 0)
-    totals = budget.spending_by_category(current_txs, result["classifications"])
-    plan = budget.budget_503020(income, totals, budget.targets(profile))
+    totals = budget.spending_by_category(current_txs, classifications)
+    transfers = sum(t["amount"] for t in current_txs if budget.is_saving(t) and t["direction"] == "out")
+    plan = budget.budget_503020(income, totals, budget.targets(profile), transfers, current["current"])
     anomalies = [t for t in enriched if t["is_anomaly"]]
     current_anomalies = [t for t in anomalies if t["date"].startswith(current["key"])]
     monthly_saving = float(result.get("suggested_monthly_saving") or 0)
@@ -184,7 +277,7 @@ def analysis():
     return jsonify({
         "source": current["source"],
         "source_note": note,
-        "months": budget.monthly_breakdown(transactions, result["classifications"], months),
+        "months": budget.monthly_breakdown(transactions, classifications, months),
         "current_month": current["label"],
         "ai_mode": mode,
         "transactions": enriched,
@@ -197,11 +290,13 @@ def analysis():
         "insights": result["insights"],
         "recommendation": result["recommendation"],
         "suggested_monthly_saving": round(monthly_saving, 2),
-        "bills_forecast": budget.bills_forecast(bills, income, plan["spent"],
+        "bills_forecast": budget.bills_forecast(bills, income, plan["spent"] + plan["transfers"],
                                                 budget.bills_paid_in_paypal(bills, [t for t in current_txs if t["source"] == "paypal"]),
                                                 current["key"]),
         "profile_is_sample": bool(profile.get("sample")),
-        "goals": [{**g, **budget.goal_timeline(g, monthly_saving)} for g in goals],
+        # Each goal uses the monthly amount the user chose for it, or Claude's suggestion.
+        "goals": [{**g, "monthly_source": "you" if g.get("monthly") else "claude",
+                   **budget.goal_timeline(g, float(g.get("monthly") or monthly_saving))} for g in goals],
         "currency": home,
         "language": language,
         "fx": {
@@ -216,11 +311,39 @@ def analysis():
     })
 
 
+# ---------- Your own edits to a transaction ----------
+
+CATEGORIES = ["need", "want", "luxury"]
+
+
+@app.post("/api/transactions/<tx_id>/edit")
+def edit_transaction(tx_id):
+    """Rename a transaction and/or change its category. Saved only for this visitor.
+
+    An empty name or category goes back to what PayPal and Claude said.
+    """
+    body = request.get_json(force=True)
+    name = (body.get("name") or "").strip()[:80]
+    category = body.get("category") or ""
+    if category and category not in CATEGORIES:
+        return error(f"Category must be one of {', '.join(CATEGORIES)}")
+
+    def change(d):
+        edits = d.setdefault("edits", {})
+        edit = {k: v for k, v in {"name": name, "category": category}.items() if v}
+        if edit:
+            edits[tx_id] = edit
+        else:
+            edits.pop(tx_id, None)
+        return edit
+    return jsonify(update_my_store(change))
+
+
 # ---------- Profile ----------
 
 @app.get("/api/profile")
 def get_profile():
-    return jsonify(storage.load_store()["profile"])
+    return jsonify(my_store()["profile"])
 
 
 @app.post("/api/profile")
@@ -240,7 +363,7 @@ def save_profile():
         d["profile"].update({"monthly_income": income, "needs_percent": needs, "wants_percent": wants,
                              "savings_percent": savings, "sample": False})
         return d["profile"]
-    return jsonify(storage.update_store(change))
+    return jsonify(update_my_store(change))
 
 
 # ---------- Settings (language and home currency) ----------
@@ -253,7 +376,7 @@ def save_settings():
     rate, so a $4,200 income becomes its MXN equivalent instead of "4,200 pesos".
     """
     body = request.get_json(force=True)
-    store = storage.load_store()
+    store = my_store()
     old = (store["profile"].get("currency") or paypal_currency()).upper()
     new = (body.get("currency") or old).upper()
     language = body.get("language") or store["profile"].get("language", "en")
@@ -273,11 +396,14 @@ def save_settings():
             for g in d["goals"]:
                 g["target"] = round(float(g["target"]) * r, 2)
                 g["saved"] = round(float(g.get("saved", 0)) * r, 2)
+            for g in d["goals"]:
+                if g.get("monthly"):
+                    g["monthly"] = round(float(g["monthly"]) * r, 2)
             for b in d["bills"]:
                 b["amount"] = round(float(b["amount"]) * r, 2)
             p["currency"] = new
         return {**p, "rate": r, "from": old}
-    return jsonify(storage.update_store(change))
+    return jsonify(update_my_store(change))
 
 
 def to_paypal_amount(amount, home):
@@ -294,7 +420,7 @@ def to_paypal_amount(amount, home):
 
 @app.get("/api/goals")
 def list_goals():
-    return jsonify(storage.load_store()["goals"])
+    return jsonify(my_store()["goals"])
 
 
 @app.post("/api/goals")
@@ -305,17 +431,38 @@ def create_goal():
         return error("Goal name is required")
     try:
         target = to_number(body.get("target"), "Target", minimum=1)
+        monthly = to_number(body.get("monthly") or 0, "Monthly amount")
     except ValueError as exc:
         return error(str(exc))
     goal = {"id": storage.new_id(), "name": name, "target": target, "saved": 0.0,
-            "created": datetime.now().date().isoformat()}
-    storage.update_store(lambda d: d["goals"].append(goal))
+            "monthly": monthly or None, "created": datetime.now().date().isoformat()}
+    update_my_store(lambda d: d["goals"].append(goal))
     return jsonify(goal), 201
+
+
+@app.patch("/api/goals/<goal_id>")
+def update_goal(goal_id):
+    """Set how much the user wants to put into this goal every month (0 or empty = use Claude's suggestion)."""
+    body = request.get_json(force=True)
+    try:
+        monthly = to_number(body.get("monthly") or 0, "Monthly amount")
+    except ValueError as exc:
+        return error(str(exc))
+
+    def change(d):
+        g = storage.find_by_id(d["goals"], goal_id)
+        if g:
+            g["monthly"] = round(monthly, 2) or None
+        return g
+    goal = update_my_store(change)
+    if not goal:
+        return error("Goal not found", 404)
+    return jsonify(goal)
 
 
 @app.delete("/api/goals/<goal_id>")
 def delete_goal(goal_id):
-    storage.update_store(lambda d: d.__setitem__("goals", [g for g in d["goals"] if g["id"] != goal_id]))
+    update_my_store(lambda d: d.__setitem__("goals", [g for g in d["goals"] if g["id"] != goal_id]))
     return jsonify({"ok": True})
 
 
@@ -329,7 +476,7 @@ def contribute(goal_id):
         amount = to_number(body.get("amount"), "Amount", minimum=0.01)
     except ValueError as exc:
         return error(str(exc))
-    store = storage.load_store()
+    store = my_store()
     goal = storage.find_by_id(store["goals"], goal_id)
     if not goal:
         return error("Goal not found", 404)
@@ -344,16 +491,16 @@ def contribute(goal_id):
     try:
         payout = paypal_client.send_payout(receiver, sent, paypal_currency(), f"FinAI savings: {goal['name']}")
     except Exception as exc:
-        return error(str(exc), 502)
+        return payout_error(exc)
 
     def change(d):
         g = storage.find_by_id(d["goals"], goal_id)
         g["saved"] = round(float(g.get("saved", 0)) + amount, 2)
         d["history"].append({"date": datetime.now().isoformat(timespec="seconds"), "type": "saving",
-                             "goal": g["name"], "amount": amount, "currency": home,
+                             "goal": g["name"], "note": f"FinAI savings: {goal['name']}", "amount": amount, "currency": home,
                              "sent_amount": sent, "sent_currency": paypal_currency(), **payout})
         return g
-    return jsonify({"goal": storage.update_store(change), "payout": payout})
+    return jsonify({"goal": update_my_store(change), "payout": payout})
 
 
 # ---------- Bills (payment calendar) ----------
@@ -365,24 +512,30 @@ def list_bills():
     Each bill gets `paid_on`: the date it was paid this month (through FinAI's Pay button, or a
     matching PayPal sandbox payment), or None. The calendar shows paid items on that date.
     """
-    store = storage.load_store()
+    store = my_store()
     bills = store["bills"]
-    transactions, _, note = get_transactions()
-    today_month = note["today_month"]
-    this_month = [t for t in transactions if t["date"].startswith(today_month) and t["source"] == "paypal"]
-    found = budget.bills_paid_in_paypal(bills, this_month)
+    transactions, months, note = get_transactions()
+    month = request.args.get("month") or note["today_month"]
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        return error("Month must look like 2026-11")
+    in_month = [t for t in transactions if t["date"].startswith(month)]
+    found = budget.bills_paid_in_paypal(bills, in_month)
     paid_by_finai = {h["bill"]: h["date"][:10] for h in store["history"]
-                     if h.get("type") == "bill" and h["date"].startswith(today_month)}
+                     if h.get("type") == "bill" and h["date"].startswith(month)}
     out = []
     for b in bills:
         paid_on = found.get(b["id"])
-        if today_month in b.get("paid_months", []):
-            paid_on = paid_by_finai.get(b["name"], paid_on) or f"{today_month}-{int(b['day']):02d}"
+        if month in b.get("paid_months", []):
+            paid_on = paid_by_finai.get(b["name"], paid_on) or f"{month}-{int(b['day']):02d}"
         out.append({**b, "paid_on": paid_on, "paid_in_paypal": b["id"] in found})
     return jsonify({
-        "month": today_month,
+        "month": month,
+        "today_month": note["today_month"],
+        "has_data": any(m["key"] == month for m in months),  # months FinAI has spending data for
         "bills": out,
-        "recurring": budget.recurring_payments(transactions, bills, today_month),
+        "recurring": budget.recurring_payments(transactions, bills, month),
     })
 
 
@@ -401,13 +554,13 @@ def create_bill():
         return error("Day must be between 1 and 31")
     bill = {"id": storage.new_id(), "name": name, "amount": amount, "day": day,
             "payee_email": (body.get("payee_email") or "").strip(), "paid_months": []}
-    storage.update_store(lambda d: d["bills"].append(bill))
+    update_my_store(lambda d: d["bills"].append(bill))
     return jsonify(bill), 201
 
 
 @app.delete("/api/bills/<bill_id>")
 def delete_bill(bill_id):
-    storage.update_store(lambda d: d.__setitem__("bills", [b for b in d["bills"] if b["id"] != bill_id]))
+    update_my_store(lambda d: d.__setitem__("bills", [b for b in d["bills"] if b["id"] != bill_id]))
     return jsonify({"ok": True})
 
 
@@ -417,7 +570,7 @@ def pay_bill(bill_id):
     body = request.get_json(force=True)
     if body.get("confirm") is not True:
         return error("Payment not confirmed by the user")
-    store = storage.load_store()
+    store = my_store()
     bill = storage.find_by_id(store["bills"], bill_id)
     if not bill:
         return error("Bill not found", 404)
@@ -432,7 +585,7 @@ def pay_bill(bill_id):
     try:
         payout = paypal_client.send_payout(receiver, sent, paypal_currency(), f"FinAI bill payment: {bill['name']}")
     except Exception as exc:
-        return error(str(exc), 502)
+        return payout_error(exc)
 
     def change(d):
         b = storage.find_by_id(d["bills"], bill_id)
@@ -440,15 +593,22 @@ def pay_bill(bill_id):
         if month not in b["paid_months"]:
             b["paid_months"].append(month)
         d["history"].append({"date": datetime.now().isoformat(timespec="seconds"), "type": "bill",
-                             "bill": b["name"], "amount": b["amount"], "currency": home,
+                             "bill": b["name"], "note": f"FinAI bill payment: {bill['name']}", "amount": b["amount"], "currency": home,
                              "sent_amount": sent, "sent_currency": paypal_currency(), **payout})
         return b
-    return jsonify({"bill": storage.update_store(change), "payout": payout})
+    return jsonify({"bill": update_my_store(change), "payout": payout})
+
+
+@app.post("/api/reset")
+def reset_demo():
+    """Start over with the sample profile, goals and bills (only for this visitor)."""
+    storage.reset_store(flask.g.visitor)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/history")
 def history():
-    return jsonify(list(reversed(storage.load_store()["history"])))
+    return jsonify(list(reversed(my_store()["history"])))
 
 
 if __name__ == "__main__":

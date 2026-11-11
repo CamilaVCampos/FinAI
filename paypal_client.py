@@ -107,7 +107,9 @@ def is_balance_hold(event_code):
     code = event_code or ""
     # T02xx are currency-conversion bookkeeping entries (PayPal converting between balances).
     # T03xx are money added from the linked (test) bank: funding, not income.
-    return code.startswith("T15") or code == "T1105" or code.startswith("T02") or code.startswith("T03")
+    # T01xx are PayPal fees (here: the fee PayPal charges for adding test money), not purchases.
+    return (code.startswith("T15") or code == "T1105" or code.startswith("T01")
+            or code.startswith("T02") or code.startswith("T03"))
 
 
 def normalize_transaction(raw):

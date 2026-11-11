@@ -46,7 +46,7 @@ _HISTORY_MONTHS = [
         (24, "Pharmacy - CVS", 18.90, "out"),                       # need
         (25, "Movie tickets", 24.00, "out"),                        # want
         (26, "Takeout - Thai food", 42.60, "out"),                  # want
-        (26, "Cocktail bar", 96.00, "out"),                         # want
+        (26, "Rooftop cocktails", 96.00, "out"),                         # want
         (27, "Uber ride", 16.30, "out"),                            # need
         (28, "Champagne and caviar night", 160.00, "out"),          # luxury
         (29, "Video game - PlayStation Store", 69.99, "out"),       # want

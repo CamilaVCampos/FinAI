@@ -53,13 +53,20 @@ def targets(profile):
     return {"needs": 50.0, "wants": 50.0 - savings, "savings": savings}
 
 
-def budget_503020(income, totals, pct=None):
-    """Targets vs actuals. 'wants' includes luxury purchases (luxury is also reported on its own)."""
+def budget_503020(income, totals, pct=None, transfers=0.0, running=False):
+    """Targets vs actuals. 'wants' includes luxury purchases (luxury is also reported on its own).
+
+    `transfers` is the money moved into savings goals this month. While the month is still
+    `running`, what is left is "not spent yet" (`unspent`), not savings: it can still be spent.
+    Once the month is over, whatever was left counts as saved too.
+    """
     pct = pct or dict(DEFAULT_TARGETS)
     needs = totals["need"]
     wants = totals["want"] + totals["luxury"]
     spent = needs + wants
-    saved = max(income - spent, 0)
+    left = income - spent - transfers
+    unspent = max(left, 0) if running else 0.0
+    saved = transfers if running else transfers + max(left, 0)
     return {
         "income": round(income, 2),
         "percents": pct,
@@ -67,9 +74,17 @@ def budget_503020(income, totals, pct=None):
         "wants": {"actual": round(wants, 2), "target": round(income * pct["wants"] / 100, 2)},
         "luxury": round(totals["luxury"], 2),
         "savings": {"actual": round(saved, 2), "target": round(income * pct["savings"] / 100, 2)},
+        "transfers": round(transfers, 2),
+        "unspent": round(unspent, 2),
+        "running": running,
         "spent": round(spent, 2),
-        "balance": round(income - spent, 2),
+        "balance": round(left, 2),  # money still free: income - spent - moved to savings
     }
+
+
+def savings_reachable(budget):
+    """Saved so far plus what is not spent yet: the most this month can still end up saving."""
+    return budget["savings"]["actual"] + budget.get("unspent", 0)
 
 
 def health_score(budget, anomaly_count):
@@ -79,7 +94,7 @@ def health_score(budget, anomaly_count):
     if income <= 0:
         return 0
     pct = budget["percents"]
-    savings_rate = budget["savings"]["actual"] / income
+    savings_rate = savings_reachable(budget) / income
     needs_rate = budget["needs"]["actual"] / income
     wants_rate = budget["wants"]["actual"] / income
     need_t, want_t, save_t = pct["needs"] / 100, pct["wants"] / 100, pct["savings"] / 100
@@ -106,7 +121,7 @@ def alerts(budget):
     if budget["wants"]["actual"] > budget["wants"]["target"]:
         out.append({"code": "wants_over", "pct": pct["wants"],
                     "amount": round(budget["wants"]["actual"] - budget["wants"]["target"], 2)})
-    if budget["savings"]["actual"] < budget["savings"]["target"]:
+    if savings_reachable(budget) < budget["savings"]["target"]:
         out.append({"code": "savings_under", "pct": pct["savings"]})
     return out
 
@@ -122,7 +137,7 @@ def _bill_words(name):
 
 def bills_paid_in_paypal(bills, month_transactions):
     """{bill id: payment date} for bills that already appear as a payment this month
-    (same amount, a word of the bill's name in the description).
+    (about the same amount, a word of the bill's name in the description).
 
     This avoids subtracting a bill twice when it was paid outside FinAI's "Pay" button.
     """
@@ -131,8 +146,9 @@ def bills_paid_in_paypal(bills, month_transactions):
     for b in bills:
         words = _bill_words(b["name"])
         for t in outgoing:
-            # 1% tolerance: after a currency switch both sides are converted and may differ by cents
-            same_amount = abs(t["amount"] - float(b["amount"])) <= max(0.01, float(b["amount"]) * 0.01)
+            # 15% tolerance: utility bills change a little every month (and currency conversions
+            # add cents); the name must match too, so this stays safe.
+            same_amount = abs(t["amount"] - float(b["amount"])) <= max(0.01, float(b["amount"]) * 0.15)
             if same_amount and any(w in t["description"].lower() for w in words):
                 found[b["id"]] = t["date"]
                 break
@@ -181,7 +197,7 @@ def recurring_payments(transactions, bills, today_month):
             "amount": round(sum(amounts) / len(amounts), 2),
             "day": days[len(days) // 2],
             "months_seen": len(by_month),
-            "paid_on": paid[0]["date"] if paid and paid[0].get("source") == "paypal" else None,
+            "paid_on": paid[0]["date"] if paid else None,
         })
     return sorted(out, key=lambda r: r["day"])
 

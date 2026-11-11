@@ -32,6 +32,19 @@ FinAI only sees **PayPal activity** plus what the user types in. The app says th
 the AI is instructed not to assume it sees all of the user's spending. When PayPal isn't connected
 or has no transactions yet, the app shows clearly labeled **sample data**.
 
+### A shared demo where every visitor gets their own copy
+FinAI is a single-person app: it reads one PayPal sandbox account that belongs to a sample person.
+So that several judges can try it at the same time without stepping on each other:
+
+- Everyone sees the **same PayPal sandbox activity**, and all of it is test money.
+- Each visitor gets an anonymous cookie. Their income, budget targets, goals, fixed payments,
+  language and currency are saved **only for them** (`data/visitors/<id>.json`).
+- **Profile → Reset demo** brings back the sample starting data for that visitor only.
+- Transfers and bill payments are real sandbox payouts from one shared test account. If its test
+  balance runs low, the app says so clearly and nothing is sent.
+- Claude's analyses are cached and shared between visitors with the same settings, which keeps the
+  app fast and the API cost low.
+
 ## Tools used
 
 - **PayPal Developer Platform (sandbox)**
@@ -59,7 +72,8 @@ Flask app (app.py)
    ├── ai_analysis.py     → Claude: classification + insights (structured JSON)
    ├── budget.py          → 50/30/20, health score, bills forecast, goal ETAs
    ├── fx.py              → Frankfurter exchange rates (currency conversion)
-   └── storage.py         → data/store.json (profile, goals, bills, transfer history)
+   └── storage.py         → data/visitors/<id>.json per visitor (profile, goals, bills, history)
+                            + data/ai_cache.json (Claude analyses shared between visitors)
 ```
 
 ## Run it locally
@@ -67,8 +81,8 @@ Flask app (app.py)
 Requirements: Python 3.10+.
 
 ```bash
-git clone <this-repo-url>
-cd finai
+git clone https://github.com/CamilaVCampos/FinAI.git
+cd FinAI
 python -m venv .venv
 # Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
@@ -97,10 +111,14 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 ## Testing instructions for judges
 
 1. Open the hosted demo (or run it locally as described above).
-2. Go to **Profile** and enter a monthly income (for example `4200`).
-3. **Home** shows the health score, the 50/30/20 bars, alerts and Claude's insights.
-4. **Spending**: filter by Needs / Wants / Luxury / Unusual, sort columns and search. The "AI reason"
-   column explains each category; "Charged as" shows purchases made abroad (EUR, CAD) before conversion.
+2. **Home** shows money left this month, the health score, a donut with needs / wants / luxury /
+   savings against your targets, month-by-month bars, alerts and Claude's insights. The app starts
+   with a labeled sample profile ($4,200 USD monthly income).
+3. **Profile**: change the income or the budget targets (needs / wants / savings %). Every screen
+   and Claude's advice update. Your changes are only visible to you.
+4. **Spending**: pick a month, then filter by Needs / Wants / Luxury / Unusual and search. Tap a
+   row to open its details: Claude's reason for the category and, for purchases made abroad
+   (EUR, CAD), the original charge before conversion.
 5. **Goals**: create a goal, then press **Transfer to goal**. Confirm, and a real PayPal sandbox
    payout is sent. The batch ID appears in the toast and in *Transfer history*.
 6. **Bills**: add a fixed payment, see it on the calendar, then **Pay with PayPal** to mark it as
@@ -108,6 +126,7 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 
 7. **Profile → Settings**: switch to *Español* and *MXN*. Income, goals and bills are converted at
    today's rate and Claude re-writes its analysis in Spanish.
+8. **Profile → Reset demo** to start over with the sample data.
 
 ## Privacy and safety
 

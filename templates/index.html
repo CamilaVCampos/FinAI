@@ -13,8 +13,12 @@
 <body>
   <header class="topbar">
     <div class="brand">Fin<span>AI</span></div>
-    <div id="badges" class="badges"></div>
+    <div class="top-right">
+      <div id="badges" class="badges"></div>
+      <button class="icon-btn" id="btn-top-refresh" data-i18n-title="refresh.button" title="Refresh" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+    </div>
   </header>
+  <div id="ptr" class="ptr" aria-hidden="true"><i class="ti ti-arrow-down"></i><span>Pull to refresh</span></div>
 
   <div id="source-banner" class="banner hidden"></div>
 
@@ -54,6 +58,8 @@
           <span><i style="background:var(--need)"></i><span data-i18n="legend.needs">Needs</span></span>
           <span><i style="background:var(--want)"></i><span data-i18n="legend.wants">Wants</span></span>
           <span><i style="background:var(--luxury)"></i><span data-i18n="legend.luxury">Luxury</span></span>
+          <span><i style="background:var(--save)"></i><span data-i18n="legend.savings">Savings</span></span>
+          <span><i style="background:var(--unspent)"></i><span data-i18n="legend.unspent">Not spent yet</span></span>
         </div>
       </div>
 
@@ -96,16 +102,18 @@
       <div class="card">
         <h3 data-i18n="goals.title">Savings goals</h3>
         <p class="muted small" data-i18n="goals.help">Every transfer is a real PayPal sandbox payout and always asks for your confirmation.</p>
+        <div id="goal-plan"></div>
         <div id="goal-list"></div>
       </div>
       <form class="card form" id="goal-form">
         <h3 data-i18n="goals.new">New goal</h3>
         <label><span data-i18n="goals.name">Name</span> <input name="name" required placeholder="Emergency fund"></label>
         <label><span data-i18n="goals.target">Target amount</span> <input name="target" type="number" min="1" step="0.01" required placeholder="1000"></label>
+        <label><span data-i18n="goals.monthly_optional">Monthly amount (optional)</span> <input name="monthly" type="number" min="0" step="0.01" data-i18n-placeholder="goals.monthly_hint" placeholder="Empty = Claude suggests it"></label>
         <button class="btn" type="submit" data-i18n="goals.add">Add goal</button>
       </form>
       <div class="card">
-        <h3 data-i18n="history.title">Transfer history</h3>
+        <h3 data-i18n="history.title">Savings transfers</h3>
         <div id="history-list" class="muted small"></div>
       </div>
     </section>
@@ -113,8 +121,13 @@
     <!-- BILLS -->
     <section id="tab-bills" class="tab">
       <div class="card">
-        <div class="row-between">
-          <h3 id="cal-title" data-i18n="bills.calendar">Payment calendar</h3>
+        <div class="row-between cal-top">
+          <div class="cal-nav">
+            <button class="icon-btn" id="cal-prev" data-i18n-title="bills.prev" title="Previous month" aria-label="Previous month"><i class="ti ti-chevron-left"></i></button>
+            <h3 id="cal-title" data-i18n="bills.calendar">Payment calendar</h3>
+            <button class="icon-btn" id="cal-next" data-i18n-title="bills.next" title="Next month" aria-label="Next month"><i class="ti ti-chevron-right"></i></button>
+            <button class="chip hidden" id="cal-today" data-i18n="bills.today">Today</button>
+          </div>
           <span id="bills-summary" class="muted small"></span>
         </div>
         <div class="calendar" id="calendar"></div>
@@ -122,6 +135,7 @@
           <span><i class="sw due"></i><span data-i18n="bills.legend_due">Due</span></span>
           <span><i class="sw auto"></i><span data-i18n="bills.legend_auto">Detected recurring</span></span>
           <span><i class="sw paid"></i><span data-i18n="bills.legend_paid">Paid</span></span>
+          <span><i class="sw missed"></i><span data-i18n="bills.legend_missed">Not found as paid</span></span>
         </div>
       </div>
       <div class="card">
@@ -132,6 +146,10 @@
         <h3 data-i18n="bills.recurring">Recurring payments found in your history</h3>
         <p class="muted small" data-i18n="bills.recurring_help">FinAI found these charges every month.</p>
         <div id="recurring-list"></div>
+      </div>
+      <div class="card">
+        <h3 data-i18n="bills.history">Payment history</h3>
+        <div id="bill-history-list" class="muted small"></div>
       </div>
       <form class="card form" id="bill-form">
         <h3 data-i18n="bills.new">New fixed payment</h3>
@@ -179,6 +197,15 @@
         <p class="muted small" data-i18n="profile.targets_help">Luxury counts inside wants.</p>
         <button class="btn" type="submit" data-i18n="profile.save">Save profile</button>
       </form>
+      <div class="card">
+        <h3><i class="ti ti-flask"></i> <span data-i18n="demo.title">About this demo</span></h3>
+        <ul class="plain">
+          <li data-i18n="demo.1"></li>
+          <li data-i18n="demo.2"></li>
+          <li data-i18n="demo.3"></li>
+        </ul>
+        <button class="btn ghost" id="btn-reset" type="button"><i class="ti ti-rotate"></i> <span data-i18n="demo.reset">Reset demo</span></button>
+      </div>
       <div class="card">
         <h3 data-i18n="privacy.title">Privacy &amp; safety</h3>
         <ul class="plain">

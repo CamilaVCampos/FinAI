@@ -1,15 +1,53 @@
 """Tiny JSON-file storage for the user's manual data (profile, goals, bills, history).
 
-Data the user types in stays on the server in data/store.json. Nothing here is sent to PayPal.
+Every visitor gets their own copy: data/visitors/<visitor id>.json, where the id comes from a
+browser cookie. So when several people try the demo, one person's changes (income, language,
+goals...) never show up for the next one. Nothing here is sent to PayPal.
+
+Claude's analyses are shared in data/ai_cache.json: the cache key already includes the
+profile, goals, language and currency, so visitors with the same settings reuse one answer.
 """
 import json
 import os
+import re
 import threading
 import uuid
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-STORE_PATH = os.path.join(DATA_DIR, "store.json")
+VISITORS_DIR = os.path.join(DATA_DIR, "visitors")
+AI_CACHE_PATH = os.path.join(DATA_DIR, "ai_cache.json")
 _lock = threading.Lock()
+_VISITOR_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def new_visitor_id():
+    return uuid.uuid4().hex
+
+
+def is_visitor_id(value):
+    """Only plain 32-character hex ids are accepted, so a cookie can never point to another path."""
+    return bool(_VISITOR_ID.match(value or ""))
+
+
+def _store_path(visitor_id):
+    if not is_visitor_id(visitor_id):
+        raise ValueError("Invalid visitor id")
+    return os.path.join(VISITORS_DIR, f"{visitor_id}.json")
+
+
+def _read_json(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def default_store():
@@ -36,35 +74,44 @@ def default_store():
              "payee_email": "", "paid_months": [], "sample": True},
         ],
         "history": [],
-        "ai_cache": {},
     }
 
 
-def load_store():
-    if not os.path.exists(STORE_PATH):
-        return default_store()
-    with open(STORE_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
+def load_store(visitor_id):
+    """This visitor's data, or the sample starting data if they haven't saved anything yet."""
     base = default_store()
-    base.update(data)
+    base.update(_read_json(_store_path(visitor_id), {}))
+    base.pop("ai_cache", None)  # older files kept Claude's cache inside; it is shared now
     return base
 
 
-def save_store(data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    tmp = STORE_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, STORE_PATH)
-
-
-def update_store(change_fn):
-    """Load, apply change_fn(data) and save atomically. Returns change_fn's result."""
+def update_store(change_fn, visitor_id):
+    """Load this visitor's data, apply change_fn(data) and save atomically. Returns change_fn's result."""
     with _lock:
-        data = load_store()
+        data = load_store(visitor_id)
         result = change_fn(data)
-        save_store(data)
+        _write_json(_store_path(visitor_id), data)
         return result
+
+
+def reset_store(visitor_id):
+    """Start over: delete this visitor's saved data so the sample starting data comes back."""
+    with _lock:
+        path = _store_path(visitor_id)
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def load_ai_cache():
+    return _read_json(AI_CACHE_PATH, {})
+
+
+def remember_ai(key, value, keep):
+    """Save one Claude analysis in the shared cache, keeping only the newest `keep` entries."""
+    with _lock:
+        cache = {k: v for k, v in load_ai_cache().items() if k != key}
+        cache[key] = value
+        _write_json(AI_CACHE_PATH, dict(list(cache.items())[-keep:]))
 
 
 def new_id():
