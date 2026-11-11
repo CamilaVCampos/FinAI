@@ -6,6 +6,10 @@ your savings goals and pays your fixed bills. Every transfer is confirmed by you
 
 Built for the **PayPal AI Hackathon** (Nov 2026).
 
+**Live demo:** <https://finai-873o.onrender.com> (PayPal sandbox, test money only; best viewed on a phone
+or a narrow browser window). On Render's free plan the first visit after a quiet period can take
+about a minute while the server wakes up.
+
 ## Who it's for
 
 People who find it hard to manage their money, or who don't know where to start: no budget,
@@ -141,7 +145,7 @@ caches; the sample analysis is prepared again at startup.
 
 ## Testing instructions for judges
 
-1. Open the hosted demo (or run it locally as described above).
+1. Open the hosted demo at <https://finai-873o.onrender.com> (or run it locally as described above).
 2. **Home** shows money left this month, the health score, a donut with needs / wants / luxury /
    savings against your targets, month-by-month bars, alerts and Claude's insights. The app starts
    with a labeled sample profile ($4,200 USD monthly income) and a **"Try FinAI in 3 steps"** guide.
