@@ -268,3 +268,44 @@ main { max-width: 900px; margin: 0 auto; padding: 12px 16px; }
 .goal-plan > div { display: grid; gap: 2px; }
 .goal-plan.over { background: #fdecef; }
 .over-text { color: var(--danger); font-weight: 600; }
+
+/* Health score: tap it to see how it is calculated */
+button.score-pill { border: 0; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+button.score-pill:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.health-detail { background: rgba(255, 255, 255, .12); border-radius: 14px; padding: 12px 14px; margin: 4px 0 12px; font-size: 13px; }
+.health-title { font-weight: 600; margin-bottom: 6px; }
+.health-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, .15); }
+.health-row small { display: block; opacity: .8; font-size: 12px; }
+.health-row strong { white-space: nowrap; }
+.health-row.total { font-weight: 600; }
+
+/* Notes */
+.note.info { background: var(--primary-soft); color: var(--primary-dark); border-color: #cbd8fa; display: flex; gap: 8px; align-items: center; }
+i.spin { display: inline-block; animation: spin .9s linear infinite; }
+.limit-note { color: var(--muted); font-style: italic; }
+.btn[disabled] { cursor: not-allowed; }
+
+/* AI card while Claude works */
+#ai-card.waiting .headline { color: var(--muted); font-weight: 500; }
+
+/* Before / after inside the AI card */
+.plan-impact { background: var(--soft); border-radius: 14px; padding: 12px 14px; margin: 4px 0 12px; }
+.impact-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+.impact-grid { display: flex; align-items: stretch; gap: 8px; }
+.impact-col { flex: 1; background: var(--card); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+.impact-col strong { color: var(--text); font-size: 16px; }
+.impact-col.plan { border: 2px solid var(--save); }
+.impact-col.plan strong { color: var(--save); }
+.impact-arrow { display: flex; align-items: center; color: var(--muted); }
+.plan-impact p { margin: 8px 0 0; }
+
+/* First-visit guide */
+.guide h3 { margin: 0; }
+.guide p { margin: 6px 0 10px; }
+.guide-step { width: 100%; display: flex; align-items: center; gap: 12px; text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 14px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font: inherit; color: var(--text); }
+.guide-step:hover { border-color: var(--primary); }
+.guide-step > span:nth-child(2) { flex: 1; }
+.guide-step small { display: block; color: var(--muted); font-size: 12px; }
+.guide-num { width: 28px; height: 28px; border-radius: 50%; background: var(--primary-soft); color: var(--primary-dark); display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; }
+.guide-step.done { opacity: .7; }
+.guide-step.done .guide-num { background: var(--save); color: #fff; }

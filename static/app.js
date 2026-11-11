@@ -96,6 +96,7 @@ function payoutNote(amount) {
 function showTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${name}`));
   document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  if (name === "spending" && !guideState().spending) { saveGuide({ spending: true }); renderGuide(); }
   window.scrollTo(0, 0);
 }
 
@@ -121,8 +122,25 @@ async function loadAnalysis(refresh = false) {
   // Only the newest request may update the screen: an older, slower answer (e.g. from before
   // a goal was added) must never overwrite a newer one.
   const mine = ++analysisRequest;
-  const a = await api("/api/analysis" + (refresh ? "?refresh=1" : ""));
+  // "quick": the numbers come back at once. If Claude hasn't analyzed this data yet, the server
+  // answers with the keyword rules (ai_pending) and Claude's analysis is fetched in the background.
+  const a = await api("/api/analysis" + (refresh ? "?refresh=1" : "?quick=1"));
   if (mine !== analysisRequest) return state.analysis;
+  applyAnalysis(a);
+  if (a.ai_pending) waitForClaude(mine);
+  return a;
+}
+
+async function waitForClaude(mine) {
+  try {
+    const full = await api("/api/analysis");
+    if (mine === analysisRequest) applyAnalysis(full);
+  } catch (err) {
+    if (mine === analysisRequest) toast(err.message, true);
+  }
+}
+
+function applyAnalysis(a) {
   state.analysis = a;
   state.currency = a.currency || "USD";
   state.language = a.language || state.language;
@@ -204,6 +222,27 @@ function renderHero(a) {
   $("#stat-spent").textContent = money(b.spent);
   $("#stat-free").textContent = money(a.bills_forecast.free_after_bills);
   $("#score").textContent = a.score;
+  renderHealth(a);
+}
+
+// Tap the Health score to see how it was calculated, part by part.
+function renderHealth(a) {
+  const h = a.health;
+  if (!h) return;
+  const b = a.budget;
+  const why = {
+    savings: t("health.why_savings", { target: money(b.savings.target) }),
+    needs: t(b.needs.actual > b.needs.target ? "health.why_over" : "health.why_within",
+      { amount: money(Math.abs(b.needs.actual - b.needs.target)) }),
+    wants: t(b.wants.actual > b.wants.target ? "health.why_over" : "health.why_within",
+      { amount: money(Math.abs(b.wants.actual - b.wants.target)) }),
+    unusual: t("health.why_unusual", { count: h.anomalies }),
+  };
+  $("#health-detail").innerHTML = `<div class="health-title">${esc(t("health.title"))}</div>` +
+    h.parts.map((p) => `<div class="health-row">
+      <span>${esc(t(`health.${p.code}`))}<small>${esc(why[p.code])}</small></span>
+      <strong>${p.points.toLocaleString(locale())} / ${p.max}</strong></div>`).join("") +
+    `<div class="health-row total"><span>${esc(t("health.total"))}</span><strong>${h.score} / 100</strong></div>`;
 }
 
 // Donut: what share of the income went to needs, wants, luxury, and what was left as savings.
@@ -279,23 +318,32 @@ function renderHome(a) {
   renderDonut(a);
   renderMonths(a);
 
-  const sampleNote = a.profile_is_sample
+  // The sample-profile note sits above the blue card, so it is read before the numbers.
+  $("#sample-note").innerHTML = a.profile_is_sample
     ? `<div class="note">${sourceTag("sample")} ${esc(t("home.sample_profile", { income: money(a.budget.income) }))} <a href="#" onclick="showTab('profile');return false;">${esc(t("home.enter_income"))}</a>.</div>`
     : "";
-  $("#alerts").innerHTML = sampleNote + a.alerts.map((al) =>
+  const preliminary = a.ai_pending ? `<div class="note info"><i class="ti ti-loader-2 spin"></i> ${esc(t("home.preliminary"))}</div>` : "";
+  $("#alerts").innerHTML = preliminary + a.alerts.map((al) =>
     `<div class="alert"><i class="ti ti-alert-triangle"></i><span>${esc(t(`alert.${al.code}`, { amount: money(al.amount), pct: al.pct }))}</span></div>`).join("");
+  renderGuide();
 
-  $("#headline").textContent = a.headline;
-  $("#ai-mode").textContent = t(a.ai_mode === "ai" ? "home.by_claude" : "home.basic");
-  $("#comparison").textContent = a.comparison || "";
-  $("#comparison").hidden = !a.comparison;
-  $("#insights").innerHTML = a.insights.map((x) => `<li>${esc(x)}</li>`).join("");
-  $("#recommendation").textContent = a.recommendation;
+  // While Claude works, the AI card says so instead of showing the keyword-rule text.
+  $("#ai-card").classList.toggle("waiting", !!a.ai_pending);
+  $("#ai-mode").textContent = t(a.ai_pending ? "home.claude_working_pill" : a.ai_mode === "ai" ? "home.by_claude" : "home.basic");
+  $("#headline").innerHTML = a.ai_pending
+    ? `<i class="ti ti-loader-2 spin"></i> ${esc(t("home.claude_working"))}` : esc(a.headline);
+  $("#comparison").textContent = a.ai_pending ? "" : a.comparison || "";
+  $("#comparison").hidden = a.ai_pending || !a.comparison;
+  $("#insights").innerHTML = a.ai_pending ? "" : a.insights.map((x) => `<li>${esc(x)}</li>`).join("");
+  $("#recommendation").textContent = a.ai_pending ? "" : a.recommendation;
+  renderPlanImpact(a);
 
   const goals = a.goals || [];
   const suggested = `<div><div class="small muted">${t("home.suggested")}</div>
       <strong>${t("home.per_month", { amount: money(a.suggested_monthly_saving) })}</strong></div>`;
-  if (a.suggested_monthly_saving > 0 && goals.length) {
+  if (a.ai_pending) {
+    $("#suggest-box").innerHTML = "";
+  } else if (a.suggested_monthly_saving > 0 && goals.length) {
     $("#suggest-box").innerHTML = suggested + `<button class="btn" id="btn-save-now">${esc(t("home.save_toward", { goal: itemName(goals[0]) }))}</button>`;
     $("#btn-save-now").onclick = () => contribute(goals[0], a.suggested_monthly_saving);
   } else if (a.suggested_monthly_saving > 0) {
@@ -303,6 +351,66 @@ function renderHome(a) {
   } else {
     $("#suggest-box").innerHTML = "";
   }
+}
+
+// Before / after: the first goal at today's saving pace vs with Claude's plan (numbers from the app).
+function renderPlanImpact(a) {
+  const p = a.plan_impact;
+  const box = $("#plan-impact");
+  if (a.ai_pending || !p) { box.innerHTML = ""; box.hidden = true; return; }
+  const when = (x) => (x.eta ? capitalize(monthName(x.eta, "long")) : t("impact.never"));
+  const goal = itemName({ name: p.goal, sample: p.goal_sample });
+  box.hidden = false;
+  box.innerHTML = `<div class="impact-title">${esc(t("impact.title", { goal, amount: money(p.remaining) }))}</div>
+    <div class="impact-grid">
+      <div class="impact-col"><span>${esc(t("impact.now"))}</span><strong>${esc(t("home.per_month", { amount: money(p.now.monthly) }))}</strong>
+        <small>${esc(t("impact.reach", { when: when(p.now) }))}</small></div>
+      <div class="impact-arrow"><i class="ti ti-arrow-right"></i></div>
+      <div class="impact-col plan"><span>${esc(t("impact.plan"))}</span><strong>${esc(t("home.per_month", { amount: money(p.plan.monthly) }))}</strong>
+        <small>${esc(t("impact.reach", { when: when(p.plan) }))}</small></div>
+    </div>
+    ${p.extra_per_month > 0 ? `<p class="small muted">${esc(t("impact.extra", { amount: money(p.extra_per_month) }))}</p>` : ""}`;
+}
+
+// ---------- First-visit guide: three steps that show the best of FinAI ----------
+const GUIDE_KEY = "finai_guide";
+
+function guideState() {
+  try { return JSON.parse(localStorage.getItem(GUIDE_KEY)) || {}; } catch { return {}; }
+}
+
+function saveGuide(change) {
+  try { localStorage.setItem(GUIDE_KEY, JSON.stringify({ ...guideState(), ...change })); } catch { /* private mode: the guide just isn't remembered */ }
+}
+
+function renderGuide() {
+  const g = guideState();
+  const box = $("#guide");
+  if (g.hidden) { box.innerHTML = ""; return; }
+  const history = state.history || [];
+  const steps = [
+    { tab: "spending", icon: "ti-receipt", done: !!g.spending },
+    { tab: "goals", icon: "ti-target-arrow", done: history.some((h) => h.type === "saving") },
+    { tab: "bills", icon: "ti-calendar-dollar", done: history.some((h) => h.type === "bill") },
+  ];
+  box.innerHTML = `<div class="card guide">
+    <div class="row-between"><h3><i class="ti ti-map-2"></i> ${esc(t("guide.title"))}</h3>
+      <button class="icon-btn" id="guide-close" aria-label="${esc(t("guide.close"))}"><i class="ti ti-x"></i></button></div>
+    <p class="small muted">${esc(t("guide.intro"))}</p>
+    ${steps.map((s, i) => `<button class="guide-step ${s.done ? "done" : ""}" data-guide-tab="${s.tab}">
+        <span class="guide-num">${s.done ? '<i class="ti ti-check"></i>' : i + 1}</span>
+        <span><strong>${esc(t(`guide.step${i + 1}`))}</strong><small>${esc(t(`guide.step${i + 1}_sub`))}</small></span>
+        <i class="ti ti-chevron-right"></i></button>`).join("")}
+  </div>`;
+  $("#guide-close").onclick = () => { saveGuide({ hidden: true }); renderGuide(); };
+  box.querySelectorAll("[data-guide-tab]").forEach((btn) => { btn.onclick = () => showTab(btn.dataset.guideTab); });
+}
+
+// The demo account's limit for one payment, in the user's currency (Infinity if unknown).
+function payoutMaxHome() {
+  const max = state.status && state.status.payout_max;
+  const rate = (state.analysis && state.analysis.fx && state.analysis.fx.rate_to_paypal) || 1;
+  return max ? max / rate : Infinity;
 }
 
 // FinAI's own payouts carry an English note ("FinAI savings: ..."): word it in the user's language.
@@ -569,12 +677,18 @@ function renderGoals(goals, monthlySaving) {
 }
 
 async function contribute(goal, suggested) {
+  // The demo account sends at most payout_max per payment: start at that amount if the
+  // suggestion is bigger, and say why.
+  const max = payoutMaxHome();
+  const start = Math.min(suggested || 0, Math.floor(max * 100) / 100);
+  const limitNote = Number.isFinite(max)
+    ? `<p class="small muted">${esc(t("pay.demo_limit", { amount: money(max) }))}</p>` : "";
   const pending = confirmDialog({
     title: t("goals.transfer_title", { goal: itemName(goal) }),
     body: t("goals.transfer_body"),
     extraHtml: `<label class="small muted">${esc(t("goals.amount", { currency: state.currency }))}</label>
-      <input id="contrib-amount" type="number" min="0.01" step="0.01" value="${(suggested || 0).toFixed(2)}">
-      <div id="contrib-fx">${payoutNote(suggested || 0)}</div>`,
+      <input id="contrib-amount" type="number" min="0.01" step="0.01" max="${Number.isFinite(max) ? max.toFixed(2) : ""}" value="${start.toFixed(2)}">
+      ${limitNote}<div id="contrib-fx">${payoutNote(start)}</div>`,
     okText: t("goals.confirm"),
   });
   $("#contrib-amount").oninput = (e) => { $("#contrib-fx").innerHTML = payoutNote(parseFloat(e.target.value) || 0); };
@@ -599,6 +713,7 @@ function renderHistory() {
   const all = state.history || [];
   $("#history-list").innerHTML = historyHtml(all.filter((h) => h.type === "saving"), t("history.empty"));
   $("#bill-history-list").innerHTML = historyHtml(all.filter((h) => h.type === "bill"), t("bills.history_empty"));
+  renderGuide();  // a transfer or a bill payment checks off a guide step
 }
 
 function historyHtml(items, emptyText) {
@@ -713,11 +828,17 @@ function renderBillList(bills) {
   $("#bill-list").innerHTML = sorted.length ? sorted.map((b) => {
     const paidBadge = b.paid_on
       ? `<span class="badge ok" title="${b.paid_in_paypal ? esc(t("bills.paid_paypal_help")) : ""}">${esc(t("bills.paid_on", { date: shortDate(b.paid_on) }))}</span>` : "";
+    // Bills above the demo limit can't be paid from the shared test account: say so up front.
+    const overLimit = !paidBadge && Number(b.amount) > payoutMaxHome() + 0.005;
+    const payButton = overLimit
+      ? `<button class="btn" disabled title="${esc(t("pay.demo_limit", { amount: money(payoutMaxHome()) }))}">${t("bills.pay")}</button>`
+      : `<button class="btn" data-pay="${b.id}">${t("bills.pay")}</button>`;
     return `<div class="bill">
       <div class="bill-main"><div class="bill-icon"><i class="ti ti-file-invoice"></i></div>
-        <div><strong>${esc(itemName(b))}</strong>${b.sample ? " " + sourceTag("sample") : ""}<div class="tx-meta">${esc(t("bills.day_line", { day: b.day, amount: money(b.amount) }))}</div></div></div>
+        <div><strong>${esc(itemName(b))}</strong>${b.sample ? " " + sourceTag("sample") : ""}<div class="tx-meta">${esc(t("bills.day_line", { day: b.day, amount: money(b.amount) }))}</div>
+        ${overLimit ? `<div class="tx-meta limit-note">${esc(t("pay.over_limit", { amount: money(payoutMaxHome()) }))}</div>` : ""}</div></div>
       <div class="goal-actions" style="margin:0">
-        ${paidBadge || `<button class="btn" data-pay="${b.id}">${t("bills.pay")}</button>`}
+        ${paidBadge || payButton}
         <button class="btn danger" data-delete-bill="${b.id}">${t("goals.delete")}</button>
       </div>
     </div>`;
@@ -968,6 +1089,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   wireForms();
   wirePullToRefresh();
   $("#btn-top-refresh").onclick = refreshAll;
+  $("#score-pill").onclick = () => {
+    const open = $("#health-detail").hidden;
+    $("#health-detail").hidden = !open;
+    $("#score-pill").setAttribute("aria-expanded", String(open));
+  };
   $("#cal-prev").onclick = () => moveCalendar(-1);
   $("#cal-next").onclick = () => moveCalendar(1);
   $("#cal-today").onclick = () => moveCalendar(0 - monthsBetween(state.billsData.month, state.calMonth));

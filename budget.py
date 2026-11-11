@@ -92,24 +92,48 @@ def savings_reachable(budget):
     return budget["savings"]["actual"] + unspent
 
 
-def health_score(budget, anomaly_count):
-    """0-100 score against the user's own targets: savings reached (40), needs within target (30), wants within target (20),
-    no anomalies (10)."""
+def health_breakdown(budget, anomaly_count):
+    """The 0-100 health score, part by part, against the user's own targets.
+
+    - savings (40): saved so far plus what is still free after this month's bills, vs the target
+    - needs (30) and wants (20): full points within target; over it, points go down in proportion
+      (for example, 10% over the target loses 10% of the points)
+    - unusual (10): 5 points less for each unusual purchase this month
+    """
     income = budget["income"]
-    if income <= 0:
-        return 0
     pct = budget["percents"]
-    savings_rate = savings_reachable(budget) / income
-    needs_rate = budget["needs"]["actual"] / income
-    wants_rate = budget["wants"]["actual"] / income
-    need_t, want_t, save_t = pct["needs"] / 100, pct["wants"] / 100, pct["savings"] / 100
-    score = 40 * (min(savings_rate / save_t, 1) if save_t > 0 else 1)
-    if need_t > 0:
-        score += 30 if needs_rate <= need_t else max(0, 30 * (1 - (needs_rate - need_t) / need_t))
-    if want_t > 0:
-        score += 20 if wants_rate <= want_t else max(0, 20 * (1 - (wants_rate - want_t) / want_t))
-    score += max(0, 10 - 5 * anomaly_count)
-    return int(round(min(score, 100)))
+    parts = {"savings": 0.0, "needs": 0.0, "wants": 0.0, "unusual": 0.0}
+    if income > 0:
+        savings_rate = savings_reachable(budget) / income
+        needs_rate = budget["needs"]["actual"] / income
+        wants_rate = budget["wants"]["actual"] / income
+        need_t, want_t, save_t = pct["needs"] / 100, pct["wants"] / 100, pct["savings"] / 100
+        parts["savings"] = 40 * (min(savings_rate / save_t, 1) if save_t > 0 else 1)
+        if need_t > 0:
+            parts["needs"] = 30 if needs_rate <= need_t else max(0, 30 * (1 - (needs_rate - need_t) / need_t))
+        if want_t > 0:
+            parts["wants"] = 20 if wants_rate <= want_t else max(0, 20 * (1 - (wants_rate - want_t) / want_t))
+        parts["unusual"] = max(0, 10 - 5 * anomaly_count)
+    return {
+        "parts": [{"code": code, "points": round(value, 1), "max": top, }
+                  for (code, top), value in zip([("savings", 40), ("needs", 30), ("wants", 20), ("unusual", 10)],
+                                                parts.values())],
+        "anomalies": anomaly_count,
+        "score": int(round(min(sum(parts.values()), 100))),
+    }
+
+
+def health_score(budget, anomaly_count):
+    return health_breakdown(budget, anomaly_count)["score"]
+
+
+def average_saved(months_breakdown, income):
+    """Average saved per FINISHED month (moved to goals + what was left of the income): today's pace."""
+    finished = [m for m in months_breakdown if not m["current"]]
+    if not finished:
+        return 0.0
+    saved = [m["saved"] + max(income - m["spent"] - m["saved"], 0) for m in finished]
+    return round(sum(saved) / len(saved), 2)
 
 
 def alerts(budget):

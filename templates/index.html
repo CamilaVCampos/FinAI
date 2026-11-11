@@ -25,14 +25,19 @@
   <main>
     <!-- HOME -->
     <section id="tab-home" class="tab active">
+      <div id="sample-note"></div>
+      <div id="guide"></div>
       <div class="hero">
         <div class="hero-top">
           <div>
             <div class="hero-label" id="hero-label">--</div>
             <div class="hero-value" id="hero-value">--</div>
           </div>
-          <div class="score-pill"><span data-i18n="home.score">Health</span><strong id="score">--</strong><span>/100</span></div>
+          <button type="button" class="score-pill" id="score-pill" aria-expanded="false" aria-controls="health-detail">
+            <span data-i18n="home.score">Health</span><strong id="score">--</strong><span>/100 <i class="ti ti-info-circle"></i></span>
+          </button>
         </div>
+        <div id="health-detail" class="health-detail" hidden></div>
         <div class="hero-bar"><div id="hero-bar-fill"></div></div>
         <div class="hero-sub" id="hero-sub"></div>
         <div class="hero-stats">
@@ -63,12 +68,13 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="ai-card">
         <h3><i class="ti ti-sparkles"></i> <span data-i18n="home.insights">AI insights</span> <span id="ai-mode" class="pill"></span></h3>
         <p id="headline" class="headline" data-i18n="home.analyzing">Analyzing your finances...</p>
         <p id="comparison" class="comparison" hidden></p>
         <ul id="insights" class="insights"></ul>
         <p id="recommendation" class="muted"></p>
+        <div id="plan-impact" class="plan-impact" hidden></div>
         <div class="suggest" id="suggest-box"></div>
       </div>
     </section>

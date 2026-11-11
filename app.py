@@ -3,6 +3,7 @@
 Run locally:  python app.py   ->  http://localhost:5000
 """
 import os
+import threading
 from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -264,12 +265,75 @@ def status():
         "savings_receiver_set": bool(os.getenv("SAVINGS_RECEIVER_EMAIL")),
         "environment": "sandbox" if "sandbox" in paypal_client.base_url() else "live",
         "paypal_currency": paypal_currency(),
+        "payout_max": PAYOUT_MAX_AMOUNT,  # demo limit per payment, in paypal_currency
         "currencies": fx.CURRENCIES,
         "languages": LANGUAGES,
     })
 
 
 # ---------- Analysis ----------
+
+_ai_running = {}  # cache key -> threading.Event, while Claude is working on that analysis
+_ai_running_lock = threading.Lock()
+
+
+def analyze_once(key, transactions, months, profile, goals, language, refresh=False):
+    """Ask Claude, but only once per analysis: if the same one is already running (another tab,
+    another judge with the same data), wait for it and reuse its answer instead of paying twice."""
+    with _ai_running_lock:
+        running = _ai_running.get(key)
+        mine = running is None
+        if mine:
+            running = _ai_running[key] = threading.Event()
+    if not mine:
+        running.wait(timeout=240)
+        cached = storage.load_ai_cache().get(key)
+        if cached and not refresh:
+            return cached["result"], cached["mode"]
+    try:
+        result, mode = ai_analysis.analyze(transactions, months, profile, goals, language)
+        if mode == "ai":
+            # Keep the last few analyses (e.g. one per language) so switching back is instant.
+            storage.remember_ai(key, {"result": result, "mode": mode}, AI_CACHE_SIZE)
+        return result, mode
+    finally:
+        if mine:
+            with _ai_running_lock:
+                _ai_running.pop(key, None)
+            running.set()
+
+
+def goals_with_paypal_balance(goals, transactions):
+    """Each goal's balance follows the PayPal transfers made to it ("FinAI savings: <goal name>").
+
+    The demo uses one shared PayPal sandbox account, so transfers made by other visitors show up
+    in everyone's PayPal activity. Using them for the goal too keeps the goal card, the Home
+    numbers and Claude's text in agreement. A balance saved by this visitor that is larger (for
+    example, transfers older than the months shown) is kept.
+    """
+    out = []
+    for g in goals:
+        note = f"finai savings: {g['name']}".strip().lower()
+        in_paypal = sum(t["amount"] for t in transactions
+                        if budget.is_saving(t) and t["description"].strip().lower() == note)
+        out.append({**g, "saved": round(max(float(g.get("saved", 0)), in_paypal), 2)})
+    return out
+
+
+def plan_impact(goals, pace_now, plan_monthly):
+    """Before / after for the first goal not reached yet: today's saving pace vs Claude's plan."""
+    goal = next((g for g in goals if float(g["target"]) > float(g.get("saved", 0))), None)
+    if not goal or plan_monthly <= 0:
+        return None
+    now = budget.goal_timeline(goal, pace_now)
+    with_plan = budget.goal_timeline(goal, plan_monthly)
+    return {
+        "goal": goal["name"], "goal_sample": bool(goal.get("sample")), "remaining": with_plan["remaining"],
+        "now": {"monthly": round(pace_now, 2), "months": now["months"], "eta": now["eta"]},
+        "plan": {"monthly": round(plan_monthly, 2), "months": with_plan["months"], "eta": with_plan["eta"]},
+        "extra_per_month": round(max(plan_monthly - pace_now, 0), 2),
+    }
+
 
 @app.get("/api/analysis")
 def analysis():
@@ -285,15 +349,20 @@ def analysis():
     # or saving shows up instantly instead of waiting for a new analysis. Claude sees them once
     # PayPal lists them. Until then a bill payment counts as a need (the user can change it).
     settled = [t for t in transactions if not t.get("pending")]
-    key = ai_analysis.cache_key(settled, profile, goals)
+    goals = goals_with_paypal_balance(goals, transactions)
+    key = ai_analysis.cache_key(settled, profile, goals, months)
     cached = storage.load_ai_cache().get(key)
+    ai_pending = False
     if cached and request.args.get("refresh") != "1":
         result, mode = cached["result"], cached["mode"]
+    elif request.args.get("quick") == "1" and ai_analysis.is_configured():
+        # Show the numbers right away with the keyword rules; the browser asks again (without
+        # quick) and Claude's analysis replaces this one when it is ready.
+        result, mode = ai_analysis.fallback_analysis(settled, months, profile, language), "rules"
+        ai_pending = True
     else:
-        result, mode = ai_analysis.analyze(settled, months, profile, goals, language)
-        if mode == "ai":
-            # Keep the last few analyses (e.g. one per language) so switching back is instant.
-            storage.remember_ai(key, {"result": result, "mode": mode}, AI_CACHE_SIZE)
+        result, mode = analyze_once(key, settled, months, profile, goals, language,
+                                    request.args.get("refresh") == "1")
     pending_rows = [{"id": t["id"], "category": "need", "label": None, "is_anomaly": False, "reason": None}
                     for t in transactions if t.get("pending") and not budget.is_saving(t)]
 
@@ -327,17 +396,22 @@ def analysis():
     anomalies = [t for t in enriched if t["is_anomaly"]]
     current_anomalies = [t for t in anomalies if t["date"].startswith(current["key"])]
     monthly_saving = float(result.get("suggested_monthly_saving") or 0)
+    breakdown = budget.monthly_breakdown(transactions, classifications, months)
+    health = budget.health_breakdown(plan, len(current_anomalies))
 
     return jsonify({
         "source": current["source"],
         "source_note": note,
-        "months": budget.monthly_breakdown(transactions, classifications, months),
+        "months": breakdown,
         "current_month": current["label"],
         "ai_mode": mode,
+        "ai_pending": ai_pending,
         "transactions": enriched,
         "totals": totals,
         "budget": plan,
-        "score": budget.health_score(plan, len(current_anomalies)),
+        "score": health["score"],
+        "health": health,
+        "plan_impact": plan_impact(goals, budget.average_saved(breakdown, income), monthly_saving),
         "alerts": budget.alerts(plan),
         "anomalies": anomalies,
         "headline": result["headline"],

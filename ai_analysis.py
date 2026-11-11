@@ -102,10 +102,13 @@ def is_configured():
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
-def cache_key(transactions, profile, goals):
+def cache_key(transactions, profile, goals, months):
     raw = json.dumps(
         {
             "version": 3,  # bump when the prompt or schema changes so old answers are not reused
+            # Which months, and whether the last one is still running: an analysis written
+            # "so far in November" must not be shown in December, when November is finished.
+            "months": [(m["key"], m["current"]) for m in months],
             "targets": [profile.get("needs_percent"), profile.get("wants_percent"), profile.get("savings_percent")],
             "tx": [(t["id"], t["amount"], t["direction"], t["description"]) for t in transactions],
             "income": profile.get("monthly_income"),

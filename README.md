@@ -6,11 +6,22 @@ your savings goals and pays your fixed bills. Every transfer is confirmed by you
 
 Built for the **PayPal AI Hackathon** (Nov 2026).
 
+## Who it's for
+
+People who find it hard to manage their money, or who don't know where to start: no budget,
+no savings habit, and no idea which spending to cut first.
+
 ## The problem
 
+About 37% of U.S. adults would not cover a $400 emergency expense with cash or its equivalent
+(Federal Reserve, [Survey of Household Economics and Decisionmaking](https://www.federalreserve.gov/consumerscommunities/sheddataviz/unexpectedexpenses-table.html), 2024 data).
 Many people don't know where their money goes, don't have a clear budget and lose track of
 big upcoming payments. Most finance apps stop at classifying expenses: they don't recommend a
 concrete action or help you carry it out.
+
+FinAI starts from the money you already move with PayPal, explains it in plain words, shows how
+long your goal takes **at today's pace vs. with Claude's plan**, and then helps you act on it with
+PayPal, always after you confirm.
 
 ## What it does
 
@@ -120,7 +131,10 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 1. Open the hosted demo (or run it locally as described above).
 2. **Home** shows money left this month, the health score, a donut with needs / wants / luxury /
    savings against your targets, month-by-month bars, alerts and Claude's insights. The app starts
-   with a labeled sample profile ($4,200 USD monthly income).
+   with a labeled sample profile ($4,200 USD monthly income) and a **"Try FinAI in 3 steps"** guide.
+   Tap the **Health** score to see how it is calculated. The numbers appear at once; the first
+   Claude analysis can take about a minute and fills in by itself. Claude's card also shows how long
+   your goal takes at today's pace vs. with its plan.
 3. **Profile**: change the income or the budget targets (needs / wants / savings %). Every screen
    and Claude's advice update. Your changes are only visible to you.
 4. **Spending**: pick a month, then filter by Needs / Wants / Luxury / Unusual and search. Tap a
@@ -129,8 +143,8 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 5. **Goals**: create a goal, then press **Transfer to goal**. Confirm, and a real PayPal sandbox
    payout is sent. The batch ID appears in the toast and in *Transfer history*.
 6. **Bills**: add a fixed payment, see it on the calendar, then **Pay with PayPal** to mark it as
-   paid with a real sandbox payout.
-
+   paid with a real sandbox payout. Payments above the demo limit (like the sample rent) show
+   the limit instead of a Pay button; try the phone plan or a small bill you add.
 7. **Profile → Settings**: switch to *Español* and *MXN*. Income, goals and bills are converted at
    today's rate and Claude re-writes its analysis in Spanish.
 8. **Profile → Reset demo** to start over with the sample data.
@@ -144,10 +158,21 @@ Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
   rejected), and payouts have per-payment and daily limits.
 - Everything runs against the PayPal **sandbox**: no real money is involved.
 
-## Roadmap
+## From demo to production
 
-- Per-user PayPal permissions in production instead of the app's own sandbox account
-- Bank aggregation for a full picture of spending
+Today FinAI reads one PayPal sandbox account (the app's own), because a user's transaction
+history isn't available through "Log in with PayPal". A production version would:
+
+1. **Sign users in with PayPal** ("Log in with PayPal") so each person has their own profile, goals and bills.
+2. **Read each user's activity with their permission**, by joining PayPal's partner program so the app can
+   call Transaction Search on the user's behalf (instead of on its own account).
+3. **Move money from the user's own account** with their approval: savings to a PayPal savings
+   balance or a linked account, and bills to the real payee's PayPal or Venmo account.
+4. **Add other accounts** through a bank-aggregation provider, so the picture isn't only PayPal.
+5. **Store data in a database** (per user, encrypted) instead of JSON files.
+
+Also planned:
+- Claude proposing several concrete actions (save, pay a bill, adjust a goal), each with a one-tap approval
 - Recurring automatic savings rules (with notifications and approval)
 
 ## License
