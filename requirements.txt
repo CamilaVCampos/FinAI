@@ -3,3 +3,4 @@ requests>=2.31
 anthropic>=0.80
 python-dotenv>=1.0
 gunicorn>=22.0
+render>=1.7.0

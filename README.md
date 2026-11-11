@@ -80,6 +80,11 @@ So that several judges can try it at the same time without stepping on each othe
   answer is remembered per transaction; (2) one short call writes the headline, month comparison,
   tips and recommendation from those categories and the same totals the app shows. A server-side
   fallback is enabled, and a keyword classifier keeps the app usable if the AI is unavailable.
+- **Render** (hosting + **Render Workflows**): the web app runs on Render, and Claude's analysis
+  runs as a Render Workflows job (`workflows.py`). The `analyze_finances` task starts one
+  `classify_group` task per group of 20 new transactions, all at the same time and each on its own
+  instance, then a `write_insights` task. The AI card says "on Render Workflows" when it ran there;
+  without Render Workflows (for example, on your own computer) the server runs the same steps itself.
 - **Frankfurter API** (<https://frankfurter.dev>): free, keyless exchange rates published by the
   European Central Bank, used to convert foreign charges and the user's home currency
 - **AG Grid Community**: the transactions table (sorting, resizing, quick search, filters)
@@ -96,6 +101,9 @@ Browser (HTML/JS, mobile-first)
 Flask app (app.py)
    ├── paypal_client.py   → PayPal sandbox: OAuth, Transaction Search, Payouts
    ├── ai_analysis.py     → Claude: classification + insights (structured JSON)
+   │      └── on Render: workflows.py (Render Workflows) → analyze_finances
+   │                         ├── classify_group × N  (in parallel, one instance each)
+   │                         └── write_insights
    ├── budget.py          → 50/30/20, health score, bills forecast, goal ETAs
    ├── fx.py              → Frankfurter exchange rates (currency conversion)
    └── storage.py         → data/visitors/<id>.json per visitor (profile, goals, bills, history)
@@ -136,9 +144,11 @@ look around right away.
 Add an `ANTHROPIC_API_KEY` from <https://console.anthropic.com/> to `.env`.
 
 ### 3. Deploy on Render (optional)
-The repo includes a Render Blueprint (`render.yaml`). In Render choose **New → Blueprint**, pick
-this repository, and fill in the secret values it asks for (PayPal client ID and secret, the two
-sandbox receiver emails and the Anthropic key). It runs `gunicorn` with one process and several
+The repo includes a Render Blueprint (`render.yaml`) with two services: the web app and the
+`finai-ai` workflow (Render Workflows). In Render choose **New → Blueprint**, pick this repository,
+and fill in the secret values it asks for (PayPal client ID and secret, the two sandbox receiver
+emails, the Anthropic key for both services, and a Render API key from **Account Settings → API
+Keys** so the web app can start workflow runs). It runs `gunicorn` with one process and several
 threads, so a visitor waiting for Claude doesn't block the others. On the free plan the files in
 `data/` are reset when the service restarts, which only clears the demo's saved visitor data and
 caches; the sample analysis is prepared again at startup.

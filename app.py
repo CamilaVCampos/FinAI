@@ -423,6 +423,8 @@ def analysis():
         "months": breakdown,
         "current_month": current["label"],
         "ai_mode": mode,
+        # Where Claude's steps ran: "render_workflows" (tasks on Render) or "server" (this app).
+        "ai_engine": result.get("engine") if mode == "ai" else None,
         "ai_pending": ai_pending,
         "transactions": enriched,
         "totals": totals,

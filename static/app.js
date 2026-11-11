@@ -330,7 +330,8 @@ function renderHome(a) {
 
   // While Claude works, the AI card says so instead of showing the keyword-rule text.
   $("#ai-card").classList.toggle("waiting", !!a.ai_pending);
-  $("#ai-mode").textContent = t(a.ai_pending ? "home.claude_working_pill" : a.ai_mode === "ai" ? "home.by_claude" : "home.basic");
+  const byClaude = a.ai_engine === "render_workflows" ? "home.by_claude_render" : "home.by_claude";
+  $("#ai-mode").textContent = t(a.ai_pending ? "home.claude_working_pill" : a.ai_mode === "ai" ? byClaude : "home.basic");
   $("#headline").innerHTML = a.ai_pending
     ? `<i class="ti ti-loader-2 spin"></i> ${esc(t("home.claude_working"))}` : esc(a.headline);
   $("#comparison").textContent = a.ai_pending ? "" : a.comparison || "";

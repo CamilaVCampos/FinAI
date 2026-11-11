@@ -8,6 +8,10 @@ To keep it fast, the work is split in two steps:
 2. Insights: one short call writes the headline, comparison, tips and recommendation, using the
    categories from step 1 and the same totals the app shows.
 
+When Render Workflows is configured (RENDER_API_KEY and FINAI_WORKFLOW), both steps run as
+Render Workflows tasks (see workflows.py), each classification group on its own instance.
+Otherwise, or if Render Workflows fails, the same steps run here in parallel threads.
+
 If ANTHROPIC_API_KEY is missing or a call fails, a simple keyword classifier is used instead
 and the UI says so.
 """
@@ -254,38 +258,49 @@ def _classify_message(chunk, transactions, profile, language):
     return "Here is the data as JSON:\n" + json.dumps(payload)
 
 
-def classify(transactions, profile, language="en"):
-    """Return (classifications, translations), asking Claude only about transactions it hasn't seen."""
+def class_keys(transactions, profile, language):
+    """{transaction id: remembered-answer key} for the transactions Claude has to look at."""
     translate = language != "en"
-    wanted = [t for t in transactions if _is_spending(t) or translate]
-    keys = {t["id"]: _class_key(t, profile, language) for t in wanted}
-    cache = storage.load_class_cache()
-    missing = [t for t in wanted if keys[t["id"]] not in cache]
-    if missing:
-        chunks = [missing[i:i + CHUNK_SIZE] for i in range(0, len(missing), CHUNK_SIZE)]
-        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
-            answers = list(pool.map(lambda chunk: _call_claude(
-                CLASSIFY_PROMPT, _classify_message(chunk, transactions, profile, language),
-                CLASSIFY_SCHEMA, "low"), chunks))
-        new = {}
-        for chunk, answer in zip(chunks, answers):
-            by_id = {c["id"]: c for c in answer["classifications"]}
-            translated = {x["id"]: x["text"] for x in answer["translations"]}
-            for t in chunk:
-                c = by_id.get(t["id"])
-                if _is_spending(t) and not c:
-                    continue  # Claude skipped it: not remembered, the keyword rule covers it below
-                new[keys[t["id"]]] = {
-                    "c": {k: c[k] for k in ("category", "label", "is_anomaly", "reason")} if c and _is_spending(t) else None,
-                    "tr": translated.get(t["id"]),
-                }
-        storage.remember_classes(new)
-        cache.update(new)
+    return {t["id"]: _class_key(t, profile, language) for t in transactions if _is_spending(t) or translate}
 
+
+def chunks_to_classify(transactions, keys, known):
+    """Transactions with no remembered answer in `known`, in groups of CHUNK_SIZE (one Claude call each)."""
+    missing = [t for t in transactions if t["id"] in keys and keys[t["id"]] not in known]
+    return [missing[i:i + CHUNK_SIZE] for i in range(0, len(missing), CHUNK_SIZE)]
+
+
+def classify_chunk(chunk, transactions, profile, language):
+    """One Claude call: categories (and translations) for one group of transactions."""
+    return _call_claude(CLASSIFY_PROMPT, _classify_message(chunk, transactions, profile, language),
+                        CLASSIFY_SCHEMA, "low")
+
+
+def answers_to_memory(chunks, answers, keys):
+    """Turn Claude's answers into remembered entries {key: {"c": classification, "tr": translation}}."""
+    new = {}
+    for chunk, answer in zip(chunks, answers):
+        by_id = {c["id"]: c for c in answer["classifications"]}
+        translated = {x["id"]: x["text"] for x in answer["translations"]}
+        for t in chunk:
+            c = by_id.get(t["id"])
+            if _is_spending(t) and not c:
+                continue  # Claude skipped it: not remembered, the keyword rule covers it below
+            new[keys[t["id"]]] = {
+                "c": {k: c[k] for k in ("category", "label", "is_anomaly", "reason")} if c and _is_spending(t) else None,
+                "tr": translated.get(t["id"]),
+            }
+    return new
+
+
+def merge_classes(transactions, keys, known, profile, language):
+    """(classifications, translations) for every transaction, from the remembered answers in `known`."""
     classifications, translations = [], []
     rule_reason = _text(language)["reason"]
-    for t in wanted:
-        hit = cache.get(keys[t["id"]])
+    for t in transactions:
+        if t["id"] not in keys:
+            continue
+        hit = known.get(keys[t["id"]])
         if hit and hit.get("tr"):
             translations.append({"id": t["id"], "text": hit["tr"]})
         if not _is_spending(t):
@@ -348,6 +363,13 @@ def _insights_message(transactions, months, profile, goals, classifications, lan
         "months": by_month,
     }
     return "Here is the user's data as JSON:\n" + json.dumps(payload, indent=1)
+
+
+def write_insights(transactions, months, profile, goals, classifications, language):
+    """One Claude call: headline, comparison, tips and recommendation."""
+    return _call_claude(INSIGHTS_PROMPT,
+                        _insights_message(transactions, months, profile, goals, classifications, language),
+                        INSIGHTS_SCHEMA, "medium")
 
 
 # ---------- Rule-based fallback (no API key) ----------
@@ -436,16 +458,70 @@ def fallback_analysis(transactions, months, profile, language="en"):
     }
 
 
+# ---------- Running the steps: here, or on Render Workflows ----------
+
+def run_steps_here(transactions, months, profile, goals, language, known):
+    """Both steps inside this server: classification groups in parallel threads, then insights.
+
+    Returns {"new_classes": remembered entries to save, "classifications", "translations", "insights"}.
+    workflows.py does the same steps as Render Workflows tasks, each group on its own instance.
+    """
+    keys = class_keys(transactions, profile, language)
+    chunks = chunks_to_classify(transactions, keys, known)
+    answers = []
+    if chunks:
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            answers = list(pool.map(lambda chunk: classify_chunk(chunk, transactions, profile, language), chunks))
+    new = answers_to_memory(chunks, answers, keys)
+    classifications, translations = merge_classes(transactions, keys, {**known, **new}, profile, language)
+    insights = write_insights(transactions, months, profile, goals, classifications, language)
+    return {"new_classes": new, "classifications": classifications, "translations": translations,
+            "insights": insights, "classify_runs": len(chunks)}
+
+
+def workflow_slug():
+    """The Render Workflows service that runs Claude's steps, e.g. "finai-ai" (empty = run them here)."""
+    return os.getenv("FINAI_WORKFLOW", "").strip() if os.getenv("RENDER_API_KEY") else ""
+
+
+def run_steps_on_render(transactions, months, profile, goals, language, known):
+    """Ask Render Workflows to run the steps (task analyze_finances in workflows.py) and wait for it."""
+    from render import Render  # only needed when Render Workflows is configured
+
+    details = Render().workflows.run_task(
+        f"{workflow_slug()}/analyze_finances",
+        {"transactions": transactions, "months": months, "profile": profile, "goals": goals,
+         "language": language, "known": known},
+    )
+    results = details.results
+    out = results[0] if isinstance(results, list) and results else results
+    if not isinstance(out, dict) or "insights" not in out:
+        raise RuntimeError("Render Workflows returned no analysis")
+    return out
+
+
 def analyze(transactions, months, profile, goals, language="en"):
-    """Return (result, mode) where mode is "ai" or "rules"."""
+    """Return (result, mode) where mode is "ai" or "rules".
+
+    `result["engine"]` says where Claude's steps ran: "render_workflows" or "server".
+    """
     if not is_configured():
         return fallback_analysis(transactions, months, profile, language), "rules"
     try:
-        classifications, translations = classify(transactions, profile, language)
-        insights = _call_claude(INSIGHTS_PROMPT,
-                                _insights_message(transactions, months, profile, goals, classifications, language),
-                                INSIGHTS_SCHEMA, "medium")
-        return {"classifications": classifications, "translations": translations, **insights}, "ai"
+        keys = class_keys(transactions, profile, language)
+        cache = storage.load_class_cache()
+        known = {k: cache[k] for k in keys.values() if k in cache}
+        out, engine = None, "server"
+        if workflow_slug():
+            try:
+                out, engine = run_steps_on_render(transactions, months, profile, goals, language, known), "render_workflows"
+            except Exception as exc:  # Render Workflows unavailable: do the same steps here
+                print(f"Render Workflows failed ({type(exc).__name__}: {exc}); running Claude's steps on the server", flush=True)
+        if out is None:
+            out = run_steps_here(transactions, months, profile, goals, language, known)
+        storage.remember_classes(out["new_classes"])
+        return {"classifications": out["classifications"], "translations": out["translations"],
+                **out["insights"], "engine": engine, "classify_runs": out.get("classify_runs", 0)}, "ai"
     except Exception as exc:  # keep the app usable during the demo
         result = fallback_analysis(transactions, months, profile, language)
         result["headline"] = _text(language)["unavailable"].format(error=type(exc).__name__)

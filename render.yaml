@@ -35,3 +35,22 @@ services:
         value: "5"
       - key: WARM_UP
         value: "1"
+      # Render Workflows: the web app runs Claude's analysis as tasks of the "finai-ai" workflow
+      # below. RENDER_API_KEY is an API key from Render > Account Settings > API Keys. Without it,
+      # the web app runs the same steps itself.
+      - key: RENDER_API_KEY
+        sync: false
+      - key: FINAI_WORKFLOW
+        value: finai-ai
+
+  # Claude's analysis as distributed tasks (workflows.py): one classification task per group of
+  # new transactions, all at the same time on their own instances, then one insights task.
+  - type: workflow
+    name: finai-ai
+    runtime: python
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python workflows.py
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
