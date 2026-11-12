@@ -6,6 +6,8 @@ your savings goals and pays your fixed bills. Every transfer is confirmed by you
 
 Built for the **PayPal AI Hackathon** (Nov 2026).
 
+**Demo video (2:51):** <https://youtu.be/J-JVG6EFPDI>
+
 **Live demo:** <https://finai-873o.onrender.com> (PayPal sandbox, test money only; best viewed on a phone
 or a narrow browser window). On Render's free plan the first visit after a quiet period can take
 about a minute while the server wakes up.
